@@ -82,6 +82,7 @@ settings_codec_status_t settings_codec_validate(const void *record, size_t recor
 _Static_assert(sizeof(display_settings_t) <= SETTINGS_CODEC_MAX_RECORD_SIZE, "display_settings_t exceeds codec scratch buffer");
 _Static_assert(sizeof(symbol_settings_t) <= SETTINGS_CODEC_MAX_RECORD_SIZE, "symbol_settings_t exceeds codec scratch buffer");
 _Static_assert(sizeof(locale_settings_t) <= SETTINGS_CODEC_MAX_RECORD_SIZE, "locale_settings_t exceeds codec scratch buffer");
+_Static_assert(sizeof(api_region_settings_t) <= SETTINGS_CODEC_MAX_RECORD_SIZE, "api_region_settings_t exceeds codec scratch buffer");
 
 void settings_display_init_default(display_settings_t *out)
 {
@@ -161,4 +162,33 @@ settings_codec_status_t settings_locale_validate(const locale_settings_t *db)
 {
     return settings_codec_validate(db, sizeof(*db), offsetof(locale_settings_t, crc32), SETTINGS_LOCALE_MAGIC,
                                     SETTINGS_LOCALE_VERSION);
+}
+
+void settings_api_region_init_default(api_region_settings_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->magic = SETTINGS_API_REGION_MAGIC;
+    out->version = SETTINGS_API_REGION_VERSION;
+    out->region = SETTINGS_API_REGION_INTL;
+}
+
+void settings_api_region_seal(api_region_settings_t *db)
+{
+    settings_codec_seal(db, sizeof(*db), offsetof(api_region_settings_t, crc32), SETTINGS_API_REGION_MAGIC,
+                         SETTINGS_API_REGION_VERSION);
+}
+
+settings_codec_status_t settings_api_region_validate(const api_region_settings_t *db)
+{
+    settings_codec_status_t status = settings_codec_validate(
+        db, sizeof(*db), offsetof(api_region_settings_t, crc32), SETTINGS_API_REGION_MAGIC, SETTINGS_API_REGION_VERSION);
+    if (status != SETTINGS_CODEC_OK)
+    {
+        return status;
+    }
+    if (db->region != SETTINGS_API_REGION_INTL && db->region != SETTINGS_API_REGION_US)
+    {
+        return SETTINGS_CODEC_BAD_RANGE;
+    }
+    return SETTINGS_CODEC_OK;
 }
