@@ -31,3 +31,6 @@ jobs:
 
       - name: Run settings_store host tests
         run: make -C components/settings_store/host_test test
+
+      - name: Run market_data_client host tests
+        run: make -C components/market_data_client/host_test test

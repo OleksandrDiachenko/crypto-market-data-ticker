@@ -28,6 +28,9 @@ extern "C" {
 #define SETTINGS_LOCALE_VERSION 1u
 #define SETTINGS_POSIX_TZ_MAX_LEN 47 // e.g. "AEST-10AEDT,M10.1.0,M4.1.0/3"
 
+#define SETTINGS_API_REGION_MAGIC 0x53415247u // 'SARG'
+#define SETTINGS_API_REGION_VERSION 1u
+
 typedef struct
 {
     uint32_t magic;
@@ -66,6 +69,24 @@ typedef struct
     uint8_t reserved2[3];
 } locale_settings_t;
 
+// Which Binance REST host to use. Regulatory split, not a locale/timezone
+// concern, so it is its own domain rather than folded into locale_settings_t.
+typedef enum
+{
+    SETTINGS_API_REGION_INTL = 0, // https://api.binance.com
+    SETTINGS_API_REGION_US = 1,   // https://api.binance.us
+} settings_api_region_t;
+
+typedef struct
+{
+    uint32_t magic;
+    uint16_t version;
+    uint16_t reserved;
+    uint32_t crc32;
+    uint8_t region;       // settings_api_region_t, stored fixed-width on disk
+    uint8_t reserved2[3]; // pad to 4-byte alignment
+} api_region_settings_t;
+
 typedef enum
 {
     SETTINGS_CODEC_OK = 0,
@@ -99,6 +120,10 @@ settings_codec_status_t settings_symbols_validate(const symbol_settings_t *db);
 
 void settings_locale_seal(locale_settings_t *db);
 settings_codec_status_t settings_locale_validate(const locale_settings_t *db);
+
+void settings_api_region_init_default(api_region_settings_t *out);
+void settings_api_region_seal(api_region_settings_t *db);
+settings_codec_status_t settings_api_region_validate(const api_region_settings_t *db);
 
 #ifdef __cplusplus
 }

@@ -81,16 +81,38 @@ Acceptance criteria:
 - [x] SNTP sync validated on real hardware (JC4880P443C_I_W: connected to saved profile, got IP, `time_sync: System time synced via SNTP` logged ~0.5s later)
 
 ### Phase 7: Market data client
-Status: Planned
+Status: Done
 
 Note: depends on Phase 6's time sync — TLS certificate validation fails on
 an unsynced clock (default epoch), independent of any Wi-Fi connectivity.
+`market_data_client_fetch_symbol_status()`/`_fetch_klines()` check
+`time_sync_is_synced()` before opening a connection.
+
+Scope: REST only (no WebSocket — see
+`docs/decisions/0002-market-data-client.md`), Binance `exchangeInfo` +
+`klines` endpoints, fetch/parse/validate only — no UI/watchlist wiring, no
+periodic polling (Phase 8).
 
 Acceptance criteria:
-- [ ] Public market data endpoint selected
-- [ ] HTTP/TLS timeout handling exists
-- [ ] JSON parser handles success/error paths
-- [ ] No API keys or secrets are required
+- [x] Public market data endpoint selected — Binance public REST API,
+      region-selectable base URL (`api_region_settings_t` in
+      `settings_store`)
+- [x] HTTP/TLS timeout handling exists — `market_data_http.c`
+      (`timeout_ms`, `MARKET_DATA_ERR_TIMEOUT`), TLS via the existing
+      certificate bundle (`esp_crt_bundle_attach`)
+- [x] JSON parser handles success/error paths — custom incremental
+      streaming parser (`market_data_json_scanner.c` +
+      `market_data_klines_parser.c` + `market_data_symbol_parser.c`),
+      covered by host tests including malformed/truncated input and
+      arbitrary chunk-boundary splits
+- [x] No API keys or secrets are required — public endpoints only, no auth
+      headers
+- [x] Validated on real hardware (JC4880P443C_I_W, via a temporary smoke-test
+      hook since Phase 7 has no `app_main` wiring of its own): connected to
+      saved Wi-Fi profile, time synced, `fetch_symbol_status("BTCUSDT")` ->
+      `is_trading=1 has_spot=1`, `fetch_klines_24h_5m("BTCUSDT")` ->
+      `count=288` with real Binance prices — see
+      `docs/validation/market-data-client-hardware-test.md`
 
 ### Phase 8: Runtime state + error handling
 Status: Planned

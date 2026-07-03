@@ -9,7 +9,8 @@ CODEC_SOURCES = $(SRC_DIR)/settings_codec.c
 TEST_NAMES = \
 	test_settings_codec_display \
 	test_settings_codec_symbols \
-	test_settings_codec_locale
+	test_settings_codec_locale \
+	test_settings_codec_api_region
 
 TESTS = $(addprefix $(BUILD_DIR)/,$(TEST_NAMES))
 
@@ -29,6 +30,9 @@ $(BUILD_DIR)/test_settings_codec_symbols: test_settings_codec_symbols.c $(CODEC_
 
 $(BUILD_DIR)/test_settings_codec_locale: test_settings_codec_locale.c $(CODEC_SOURCES) test_common.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ test_settings_codec_locale.c $(CODEC_SOURCES)
+
+$(BUILD_DIR)/test_settings_codec_api_region: test_settings_codec_api_region.c $(CODEC_SOURCES) test_common.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ test_settings_codec_api_region.c $(CODEC_SOURCES)
 
 clean:
 	rm -rf $(BUILD_DIR)
