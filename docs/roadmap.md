@@ -55,6 +55,8 @@ Acceptance criteria:
 - [ ] Backlight/display init is documented
 - [ ] Minimal UI renders on screen
 - [ ] Display failure path is logged
+- [ ] Touch controller is initialized and registered as an LVGL input device
+- [ ] Touch failure path is logged
 
 ### Phase 5: Network connectivity
 Status: Planned
