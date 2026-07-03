@@ -69,15 +69,16 @@ Acceptance criteria:
 - [x] Autoconnect validated on real hardware
 
 ### Phase 6: Device settings & time sync
-Status: In progress
+Status: In progress (pending hardware validation)
 
 Acceptance criteria:
 - [x] Settings persistence contract (display/symbols/locale) defined in `settings_store`
 - [x] Settings stored unencrypted (default NVS partition) — no secrets involved
 - [x] Host-side tests cover codec seal/validate/corruption paths
-- [ ] SNTP time sync starts after Wi-Fi connects and sets system time (UTC)
-- [ ] Time sync failure/timeout is logged and does not block the rest of the app (soft dependency, same category as Wi-Fi)
-- [ ] `locale_settings_t`'s `posix_tz` is applied (`setenv`/`tzset`) for local-time display, kept separate from the UTC time source used for TLS validation
+- [x] SNTP time sync starts after Wi-Fi connects and sets system time (UTC)
+- [x] Time sync failure/timeout is logged and does not block the rest of the app (soft dependency, same category as Wi-Fi)
+- [x] `locale_settings_t`'s `posix_tz` is applied (`setenv`/`tzset`) for local-time display, kept separate from the UTC time source used for TLS validation
+- [ ] SNTP sync validated on real hardware (log line confirms sync after Wi-Fi connects)
 
 ### Phase 7: Market data client
 Status: Planned

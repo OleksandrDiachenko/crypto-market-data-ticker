@@ -1,6 +1,7 @@
 #include "startup_diagnostics.h"
 #include "app_lifecycle.h"
 #include "display_ui.h"
+#include "time_sync.h"
 #include "wifi_manager.h"
 
 #include "esp_log.h"
@@ -34,5 +35,12 @@ void app_main(void)
     if (wifi_manager_init() != ESP_OK || wifi_manager_start() != ESP_OK)
     {
         ESP_LOGW(TAG, "Wi-Fi failed to start; continuing without network");
+    }
+
+    // Time sync is likewise best-effort: it arms itself against Wi-Fi
+    // connecting and never blocks startup.
+    if (time_sync_start() != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Time sync failed to start; continuing with unsynced clock");
     }
 }
