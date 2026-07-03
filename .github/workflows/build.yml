@@ -19,3 +19,12 @@ jobs:
           esp_idf_version: v6.0.1
           target: esp32p4
           path: '.'
+
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Run wifi_manager host tests
+        run: make -C components/wifi_manager/host_test test
