@@ -7,9 +7,16 @@
   C, no ESP-IDF, built with plain gcc + ASan/UBSan). Runs in CI as the
   `host-tests` job in `.github/workflows/build.yml`.
 - `make -C components/settings_store/host_test test` — host-side tests for
-  the display/symbols/locale settings blob codec (seal/validate,
+  the display/symbols/locale/api_region settings blob codec (seal/validate,
   corruption and out-of-range rejection; pure C, same gcc + ASan/UBSan
   setup). Runs in the same `host-tests` CI job.
+- `make -C components/market_data_client/host_test test` — host-side tests
+  for the Binance REST client's pure logic: the query-string builder, the
+  incremental JSON tokenizer (including token reassembly across arbitrary
+  chunk boundaries), and the two streaming grammars (exchangeInfo symbol
+  status, klines rows) covering valid/malformed/edge-case JSON. Pure C, same
+  gcc + ASan/UBSan setup, no ESP-IDF dependency. Runs in the same
+  `host-tests` CI job.
 
 ## Planned Tests
 - host-side parser tests
