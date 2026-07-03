@@ -9,5 +9,7 @@ idf_component_register(
     REQUIRES
         board_jc4880p443c
         wifi_manager
+        settings_store
+        time_sync
         nvs_flash
 )

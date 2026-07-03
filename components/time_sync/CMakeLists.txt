@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS
+        "src/time_sync.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_REQUIRES
+        esp_netif
+        esp_event
+        settings_store
+)
