@@ -122,7 +122,31 @@ Acceptance criteria:
 - [ ] Recoverable errors are represented clearly
 - [ ] Fatal errors are logged and documented
 
-### Phase 9: Host-side tests + CI hardening
+### Phase 9: Real-time WebSocket streaming
+Status: Planned
+
+Note: depends on Phase 8's runtime state model (live updates need
+somewhere in application state to land) and Phase 7's
+`api_region_settings_t` (WS endpoint is region-selected the same way as
+the REST base URL): `wss://stream.binance.com:9443` international /
+`wss://stream.binance.us:9443` US (port 443 also valid for both).
+
+Scope: Kline/candlestick stream only (`{symbol}@kline_{interval}`,
+~1-2s push updates) - no depth/trade/ticker streams. Same symbol/interval
+this project already polls via REST (`market_data_client_fetch_klines_24h_5m`),
+now updated live between REST syncs rather than only every 5 minutes.
+
+Acceptance criteria:
+- [ ] WebSocket endpoint selected and region-aware (reuses `api_region_settings_t`)
+- [ ] Connection lifecycle handled: TLS WSS connect, SUBSCRIBE, reconnect
+      with backoff on drop, clean shutdown - no crash/hang if the stream
+      is unavailable (same soft-dependency treatment as Wi-Fi/time_sync)
+- [ ] Kline stream event JSON parsed (event type/time, symbol, kline
+      payload: open/high/low/close/volume, `x` close flag)
+- [ ] Live candle updates land in Phase 8's runtime state model
+- [ ] No API keys or secrets are required
+
+### Phase 10: Host-side tests + CI hardening
 Status: Planned
 
 Acceptance criteria:
@@ -130,7 +154,7 @@ Acceptance criteria:
 - [ ] Parser/state machine tests added
 - [ ] CI runs host-side unit tests on push/PR
 
-### Phase 10: Portfolio polish
+### Phase 11: Portfolio polish
 Status: Planned
 
 Acceptance criteria:
