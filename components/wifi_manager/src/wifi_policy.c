@@ -289,6 +289,15 @@ uint8_t wifi_policy_handle(wifi_policy_t *p, const wifi_policy_input_t *in, wifi
 
     case WIFI_POLICY_IN_CONNECT_SUCCESS:
     {
+        if (p->current_ssid[0] == '\0')
+        {
+            // Stale/spurious success with no active connect attempt (e.g. a
+            // duplicate low-level event outside CONNECTING state) - nothing
+            // was actually being connected to, so there is nothing valid to
+            // mark as last-success. Processing this anyway would persist an
+            // empty-SSID profile entry.
+            return 0;
+        }
         char ssid[WIFI_POLICY_SSID_MAX + 1];
         copy_ssid(ssid, p->current_ssid);
         p->state = WIFI_POLICY_STATE_CONNECTED;
