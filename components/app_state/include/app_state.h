@@ -19,6 +19,7 @@
 
 #include "esp_err.h"
 #include "market_data_client.h"
+#include "market_data_kline_update.h"
 #include "settings_codec.h"
 
 #ifdef __cplusplus
@@ -72,6 +73,14 @@ esp_err_t app_state_record_success(uint8_t index, const market_data_kline_t *kli
 // vs ERROR (retry_attempt reset to 0, since retrying an unrecoverable error
 // unchanged is pointless).
 esp_err_t app_state_record_error(uint8_t index, market_data_err_t err, bool recoverable);
+
+// Applies one live `@kline_1s` update from app_state_ws_task into index's
+// klines (see app_state_kline_merge.h for the merge/append/stale-ignore
+// rules), under the same lock as app_state_record_success()/_error(). Does
+// NOT touch state/retry_attempt/last_error - those remain owned exclusively
+// by the REST sync task. A no-op if index's klines are still empty (REST
+// hasn't bootstrapped this symbol yet).
+esp_err_t app_state_apply_kline_update(uint8_t index, const market_data_kline_update_t *update, int64_t interval_ms);
 
 #ifdef __cplusplus
 }

@@ -17,6 +17,19 @@
   status, klines rows) covering valid/malformed/edge-case JSON. Pure C, same
   gcc + ASan/UBSan setup, no ESP-IDF dependency. Runs in the same
   `host-tests` CI job.
+- `make -C components/market_data_ws_client/host_test test` — host-side
+  tests for the WebSocket kline stream client's pure logic: the
+  combined-stream URL builder, and the streaming grammar for one
+  `@kline_1s` event (valid/malformed/non-kline/unknown-key/type-mismatch
+  cases, plus the same chunk-boundary reassembly check as the REST parsers).
+  Pure C, same gcc + ASan/UBSan setup, no ESP-IDF dependency. Runs in the
+  same `host-tests` CI job.
+- `make -C components/app_state/host_test test` — host-side tests for the
+  retry/backoff/resync policy and the `@kline_1s` → 5m-candle merge
+  aggregator (merge-in-place, append-with-eviction, stale/out-of-order
+  ignore, volume/trade-count accumulation only on a closed 1s kline). Pure
+  C, same gcc + ASan/UBSan setup, no ESP-IDF dependency. Runs in the same
+  `host-tests` CI job.
 
 ## Planned Tests
 - host-side parser tests

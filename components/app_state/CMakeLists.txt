@@ -1,14 +1,17 @@
 idf_component_register(
     SRCS
         "src/app_state.c"
+        "src/app_state_kline_merge.c"
         "src/app_state_retry_policy.c"
         "src/app_state_sync_task.c"
+        "src/app_state_ws_task.c"
     INCLUDE_DIRS
         "include"
     PRIV_INCLUDE_DIRS
         "src"
     REQUIRES
         market_data_client
+        market_data_ws_client
         settings_store
     PRIV_REQUIRES
         heap

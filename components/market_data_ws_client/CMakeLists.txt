@@ -1,0 +1,17 @@
+idf_component_register(
+    SRCS
+        "src/market_data_ws_client.c"
+        "src/market_data_ws_stream_parser.c"
+        "src/market_data_ws_url.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_INCLUDE_DIRS
+        "src"
+    REQUIRES
+        market_data_client
+        settings_store
+    PRIV_REQUIRES
+        esp_websocket_client
+        esp_event
+        esp-tls
+)
