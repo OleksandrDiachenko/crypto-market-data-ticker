@@ -99,6 +99,16 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.1.2
+  espressif/esp_websocket_client:
+    component_hash: 3fb288702517ef4d75bf933a115f1056ee0c2540d964f9e1d856e0bb67e1dfeb
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.7.0
   espressif/esp_wifi_remote:
     component_hash: c76f847d3a8ee9bd9b6e51aca2842be2ae07b936231c18635ac6902f285aa717
     dependencies:
@@ -149,8 +159,9 @@ direct_dependencies:
 - espressif/esp_lcd_st7701
 - espressif/esp_lcd_touch_gt911
 - espressif/esp_lvgl_port
+- espressif/esp_websocket_client
 - espressif/esp_wifi_remote
 - idf
-manifest_hash: 4612befc1999c995c6880bcfc8d3728e8b928d60919a896b1d9933a60cc21696
+manifest_hash: 6bc093c3dc9d00f3a402fd3c87334eb9ff86de7c18b32f26bba4960d3c5a0967
 target: esp32p4
 version: 3.0.0

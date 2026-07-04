@@ -150,7 +150,7 @@ Acceptance criteria:
       `wifi_manager` (Phase 5) along the way - see the same report.
 
 ### Phase 9: Real-time WebSocket streaming
-Status: Planned
+Status: In progress - implementation done, hardware validation pending
 
 Note: depends on Phase 8's runtime state model (live updates need
 somewhere in application state to land) and Phase 7's
@@ -158,20 +158,30 @@ somewhere in application state to land) and Phase 7's
 the REST base URL): `wss://stream.binance.com:9443` international /
 `wss://stream.binance.us:9443` US (port 443 also valid for both).
 
-Scope: Kline/candlestick stream only (`{symbol}@kline_{interval}`,
-~1-2s push updates) - no depth/trade/ticker streams. Same symbol/interval
-this project already polls via REST (`market_data_client_fetch_klines_24h_5m`),
-now updated live between REST syncs rather than only every 5 minutes.
+Scope: `{symbol}@kline_1s` combined-stream only (one connection for the
+whole watchlist) - no depth/trade/ticker streams. Each 1s update is merged
+into the same 5m candle series REST already polls
+(`market_data_client_fetch_klines_24h_5m`) via standard exchange
+candle-update rules (update the in-progress 5m candle, or roll over to a
+new one) - see
+[0004: WebSocket kline streaming](decisions/0004-websocket-streaming.md)
+for the full design and why `@kline_1s` rather than `@kline_5m` directly.
 
 Acceptance criteria:
-- [ ] WebSocket endpoint selected and region-aware (reuses `api_region_settings_t`)
-- [ ] Connection lifecycle handled: TLS WSS connect, SUBSCRIBE, reconnect
-      with backoff on drop, clean shutdown - no crash/hang if the stream
-      is unavailable (same soft-dependency treatment as Wi-Fi/time_sync)
-- [ ] Kline stream event JSON parsed (event type/time, symbol, kline
+- [x] WebSocket endpoint selected and region-aware (reuses `api_region_settings_t`)
+- [x] Connection lifecycle handled: TLS WSS connect, reconnect on drop
+      (esp_websocket_client's own fixed-delay reconnect, see ADR 0004 §6),
+      clean shutdown - no crash/hang if the stream is unavailable (same
+      soft-dependency treatment as Wi-Fi/time_sync). Subscription is via
+      the combined-stream URL itself, not a runtime SUBSCRIBE frame (ADR
+      0004 §4).
+- [x] Kline stream event JSON parsed (event type/time, symbol, kline
       payload: open/high/low/close/volume, `x` close flag)
-- [ ] Live candle updates land in Phase 8's runtime state model
-- [ ] No API keys or secrets are required
+- [x] Live candle updates land in Phase 8's runtime state model
+- [x] No API keys or secrets are required
+- [ ] Validated on real hardware: live candle ticks between REST syncs,
+      volume/trade-count advance only once per closed second, graceful
+      behavior with Wi-Fi down (see `docs/validation/` once written)
 
 ### Phase 10: Host-side tests + CI hardening
 Status: Planned

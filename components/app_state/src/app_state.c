@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "app_state_kline_merge.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -147,6 +148,20 @@ esp_err_t app_state_record_error(uint8_t index, market_data_err_t err, bool reco
         slot->state = APP_STATE_SYMBOL_ERROR;
         slot->retry_attempt = 0;
     }
+    xSemaphoreGive(s_lock);
+    return ESP_OK;
+}
+
+esp_err_t app_state_apply_kline_update(uint8_t index, const market_data_kline_update_t *update, int64_t interval_ms)
+{
+    if (update == NULL || index >= s_symbol_count)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    symbol_slot_t *slot = &s_symbols[index];
+    app_state_kline_merge_apply(slot->klines, &slot->kline_count, APP_STATE_KLINE_CAPACITY, interval_ms, update);
     xSemaphoreGive(s_lock);
     return ESP_OK;
 }

@@ -34,3 +34,9 @@ jobs:
 
       - name: Run market_data_client host tests
         run: make -C components/market_data_client/host_test test
+
+      - name: Run market_data_ws_client host tests
+        run: make -C components/market_data_ws_client/host_test test
+
+      - name: Run app_state host tests
+        run: make -C components/app_state/host_test test

@@ -2,6 +2,7 @@
 #include "app_lifecycle.h"
 #include "app_state.h"
 #include "app_state_sync_task.h"
+#include "app_state_ws_task.h"
 #include "display_ui.h"
 #include "time_sync.h"
 #include "wifi_manager.h"
@@ -62,5 +63,12 @@ void app_main(void)
     if (app_state_sync_task_start() != ESP_OK)
     {
         ESP_LOGW(TAG, "Market data sync task failed to start; continuing without live data");
+    }
+
+    // Live WebSocket updates are best-effort like the sync task itself -
+    // failure here only costs live data between REST syncs.
+    if (app_state_ws_task_start() != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Market data WebSocket task failed to start; continuing without live updates");
     }
 }
