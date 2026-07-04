@@ -259,6 +259,16 @@ static bool find_password_for_ssid(const char *ssid, char *out_password, size_t 
 
 static void mark_last_success_and_save(const char *ssid)
 {
+    // Defense-in-depth: wifi_policy already guards against emitting this
+    // action for an empty SSID (see WIFI_POLICY_IN_CONNECT_SUCCESS), but
+    // this adapter must not persist a corrupt profile even if that guard
+    // were ever bypassed.
+    if (ssid == NULL || ssid[0] == '\0')
+    {
+        ESP_LOGW(TAG, "mark_last_success_and_save called with empty ssid; ignoring");
+        return;
+    }
+
     int16_t idx = -1;
     for (uint8_t i = 0; i < profile_db.count; i++)
     {
@@ -612,6 +622,64 @@ static void handle_scan_done(void)
     publish_event(WIFI_MANAGER_EVENT_SCAN_DONE, NULL);
 }
 
+// Read-side validation + recovery: drops any loaded profile record whose
+// SSID is empty (corrupt/invalid - a required field) and re-persists the
+// cleaned store so the fix survives future boots too, instead of masking
+// the same corruption forever. Guards against whatever produced the bad
+// record in the first place (see the WIFI_POLICY_IN_CONNECT_SUCCESS guard
+// above) as well as any other cause of storage corruption.
+static void sanitize_profile_db(void)
+{
+    uint8_t write = 0;
+    bool changed = false;
+    for (uint8_t read = 0; read < profile_db.count; read++)
+    {
+        if (profile_db.records[read].ssid[0] == '\0')
+        {
+            changed = true;
+            continue;
+        }
+        if (write != read)
+        {
+            profile_db.records[write] = profile_db.records[read];
+        }
+        write++;
+    }
+    if (!changed)
+    {
+        return;
+    }
+
+    for (uint8_t i = write; i < profile_db.count; i++)
+    {
+        memset(&profile_db.records[i], 0, sizeof(profile_db.records[i]));
+    }
+    profile_db.count = write;
+
+    if (profile_db.last_success_ssid[0] != '\0')
+    {
+        bool still_present = false;
+        for (uint8_t i = 0; i < profile_db.count; i++)
+        {
+            if (strcmp(profile_db.records[i].ssid, profile_db.last_success_ssid) == 0)
+            {
+                still_present = true;
+                break;
+            }
+        }
+        if (!still_present)
+        {
+            profile_db.last_success_ssid[0] = '\0';
+        }
+    }
+
+    ESP_LOGW(TAG, "Removed corrupted (empty-SSID) Wi-Fi profile entries from storage");
+    if (profile_storage_available)
+    {
+        wifi_profile_store_save(&profile_db);
+    }
+}
+
 static void handle_started(void)
 {
     bool store_ok = false;
@@ -625,6 +693,7 @@ static void handle_started(void)
     ESP_LOGI(TAG, "Wi-Fi profile storage available: %s", store_ok ? "yes" : "no");
 
     wifi_profile_store_load(&profile_db);
+    sanitize_profile_db();
     inject_dev_profile_if_configured();
     sync_policy_profiles_from_db();
 
