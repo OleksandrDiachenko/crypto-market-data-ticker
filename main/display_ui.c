@@ -396,7 +396,7 @@ static void build_statusbar(lv_obj_t *screen)
 
     s_clock_label = lv_label_create(bar);
     lv_obj_set_style_text_color(s_clock_label, lv_color_hex(0xB7BCC5), 0);
-    lv_obj_set_style_text_font(s_clock_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_clock_label, &lv_font_montserrat_16, 0);
     lv_label_set_text(s_clock_label, "--:--");
 
     lv_obj_t *right = lv_obj_create(bar);
@@ -416,7 +416,7 @@ static void build_statusbar(lv_obj_t *screen)
     lv_obj_set_style_pad_column(right, 16, 0);
 
     s_conn_label = lv_label_create(right);
-    lv_obj_set_style_text_font(s_conn_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_conn_label, &lv_font_montserrat_16, 0);
     lv_label_set_text(s_conn_label, LV_SYMBOL_WIFI " --");
 
     lv_obj_t *nav_btn = lv_button_create(right);
@@ -430,18 +430,28 @@ static void build_statusbar(lv_obj_t *screen)
                                     LV_OBJ_FLAG_SCROLL_MOMENTUM | LV_OBJ_FLAG_SCROLL_CHAIN |
                                     LV_OBJ_FLAG_SCROLL_ON_FOCUS | LV_OBJ_FLAG_SCROLL_WITH_ARROW |
                                     LV_OBJ_FLAG_SNAPPABLE | LV_OBJ_FLAG_PRESS_LOCK | LV_OBJ_FLAG_GESTURE_BUBBLE);
+    // lv_obj_remove_style_all() also resets width/height back to the base
+    // class default (a fixed ~130x130px, LV_DPI_DEF) - left unset, the
+    // button was far taller than the 40px bar and got clipped by it. Fill
+    // the bar's full height instead, and let width fit the padded label;
+    // remove_style_all also dropped the button's own default centering
+    // layout, so that's reapplied explicitly too.
+    lv_obj_set_height(nav_btn, STATUSBAR_HEIGHT_PX);
+    lv_obj_set_width(nav_btn, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(nav_btn, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(nav_btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     // A label-sized hit target is as hard to tap as a hyperlink - pad the
-    // button well past its text, then extend the touch-sensitive area
-    // further still, without changing how big it looks.
-    lv_obj_set_style_pad_top(nav_btn, 10, 0);
-    lv_obj_set_style_pad_bottom(nav_btn, 10, 0);
+    // button past its text, then extend the touch-sensitive area further
+    // still, without changing how big it looks.
+    lv_obj_set_style_pad_top(nav_btn, 4, 0);
+    lv_obj_set_style_pad_bottom(nav_btn, 4, 0);
     lv_obj_set_style_pad_left(nav_btn, 10, 0);
     lv_obj_set_style_pad_right(nav_btn, 10, 0);
     lv_obj_set_ext_click_area(nav_btn, 16);
     lv_obj_add_event_cb(nav_btn, nav_click_cb, LV_EVENT_CLICKED, NULL);
     s_nav_label = lv_label_create(nav_btn);
     lv_obj_set_style_text_color(s_nav_label, COLOR_ACCENT, 0);
-    lv_obj_set_style_text_font(s_nav_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_nav_label, &lv_font_montserrat_16, 0);
     lv_label_set_text(s_nav_label, LV_SYMBOL_SETTINGS " Settings");
 }
 
