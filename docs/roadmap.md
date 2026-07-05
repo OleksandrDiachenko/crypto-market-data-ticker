@@ -187,7 +187,7 @@ Acceptance criteria:
       client before Wi-Fi connected)
 
 ### Phase 10: OTA firmware update via GitHub Releases
-Status: Planned
+Status: Done
 
 Scope: `esp_https_ota` + `esp_crt_bundle_attach` (same TLS pattern as
 `market_data_client`'s REST calls), firmware artifact sourced from this
@@ -228,14 +228,28 @@ Acceptance criteria:
       `app_state_get_ota_info()`/`_set_ota_info()`
 - [x] Manual "check now" / "update now" trigger (CLI/log-driven until
       Phase 11's UI exists, then wired into Settings) - `ota_check`/
-      `ota_update` console commands (`main/ota_console.c`) over the
-      existing log UART
-- [ ] Rollback on a bad image validated
+      `ota_update` console commands (`main/ota_console.c`); hardware
+      validation found this REPL's physical console (UART0) isn't
+      reachable over this board's currently-connected USB port (only its
+      secondary USB-Serial-JTAG output mirror is) - code is correct and
+      build-verified, real interactive use needs the other USB-C port or
+      a UART-TTL adapter - see
+      `docs/validation/ota-firmware-update-hardware-test.md`
+- [x] Rollback on a bad image validated
       (`esp_ota_mark_app_valid_cancel_rollback` / anti-rollback boot-loop
-      protection)
+      protection) - deliberately broken `0.10.2` test release crashed
+      before confirming valid; bootloader auto-reverted to `0.10.1`,
+      reproduced twice - see
+      `docs/validation/ota-firmware-update-hardware-test.md`
 - [x] No new secrets required (public repo, public release assets)
-- [ ] Validated on real hardware: a real OTA flash from a GitHub release,
-      plus a deliberate bad-image rollback test
+- [x] Validated on real hardware: a real OTA flash from a GitHub release,
+      plus a deliberate bad-image rollback test - `0.10.0` -> `0.10.1` via
+      a published GitHub Release (JC4880P443C_I_W), NVS/Wi-Fi/co-processor
+      firmware all intact after the `factory` -> `ota_0`/`ota_1` partition
+      change with no `erase-flash`; also caught and fixed a background
+      OTA-check retry bug (didn't retry for 6h after a transient
+      NOT_SYNCED failure) - see
+      `docs/validation/ota-firmware-update-hardware-test.md`
 
 ### Phase 11: Market data dashboard UI
 Status: Planned
