@@ -14,6 +14,7 @@
 #include "esp_console.h"
 #endif
 
+#include <ctype.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -57,6 +58,8 @@ typedef enum
     SETTINGS_VIEW_LOCALE,
     SETTINGS_VIEW_WIFI,
     SETTINGS_VIEW_WIFI_PASSWORD,
+    SETTINGS_VIEW_WATCHLIST_MANAGE,
+    SETTINGS_VIEW_WATCHLIST_ADD,
 } settings_view_t;
 
 // One LVGL row per watchlist symbol. Built once per (re)load of the
@@ -152,6 +155,44 @@ static bool s_wifi_connecting;
 static uint32_t s_wifi_connect_baseline_seq;
 static uint8_t s_wifi_connect_ticks;
 #define WIFI_CONNECT_TIMEOUT_TICKS 20 // ~20s at the 1s update-timer cadence
+
+// --- Watchlist symbols (Settings > Watchlist symbols) ---
+
+static lv_obj_t *s_settings_watchlist_row_desc;
+
+static lv_obj_t *s_watchlist_manage_screen;
+static lv_obj_t *s_watchlist_manage_subtitle;
+static lv_obj_t *s_watchlist_list;
+
+// Per-row click context, indexed the same as the row it was created for -
+// same rationale as s_wifi_click_ctx: stays valid for the row's remove
+// button after build_watchlist_symbol_row() returns.
+typedef struct
+{
+    uint8_t index;
+} watchlist_row_click_ctx_t;
+static watchlist_row_click_ctx_t s_watchlist_click_ctx[SETTINGS_MAX_WATCHLIST];
+
+static lv_obj_t *s_watchlist_add_screen;
+static lv_obj_t *s_watchlist_add_subtitle;
+static lv_obj_t *s_watchlist_symbol_input;
+static lv_obj_t *s_watchlist_add_keyboard;
+static lv_obj_t *s_watchlist_status_label; // "Searching..." shown only while a check is in flight
+static lv_obj_t *s_watchlist_match_card;
+static lv_obj_t *s_watchlist_match_pair_label;
+static lv_obj_t *s_watchlist_match_last_price_label;
+static lv_obj_t *s_watchlist_match_change_label;
+static lv_obj_t *s_watchlist_match_range_label;
+static lv_obj_t *s_watchlist_error_note;
+static lv_obj_t *s_watchlist_error_label;
+static lv_obj_t *s_watchlist_add_button;
+
+// Set by watchlist_add_check_cb() on a successful "Search" lookup;
+// consumed by watchlist_add_to_watchlist_cb() so the symbol actually added
+// is always the last one that round-tripped Binance, not just whatever text
+// currently sits in the field (which could have been edited since).
+static char s_watchlist_pending_symbol[SETTINGS_SYMBOL_MAX_LEN + 1];
+static bool s_watchlist_match_valid;
 
 // Reused scratch buffers: avoids per-tick dynamic allocation (AGENTS.md: no
 // dynamic allocation in the hot path) and avoids putting
@@ -444,6 +485,8 @@ static void show_settings_view(settings_view_t view)
     lv_obj_add_flag(s_locale_screen, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_wifi_screen, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_wifi_password_screen, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_watchlist_manage_screen, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_watchlist_add_screen, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t *target = s_settings_list;
     switch (view)
@@ -456,6 +499,12 @@ static void show_settings_view(settings_view_t view)
         break;
     case SETTINGS_VIEW_WIFI_PASSWORD:
         target = s_wifi_password_screen;
+        break;
+    case SETTINGS_VIEW_WATCHLIST_MANAGE:
+        target = s_watchlist_manage_screen;
+        break;
+    case SETTINGS_VIEW_WATCHLIST_ADD:
+        target = s_watchlist_add_screen;
         break;
     default:
         break;
@@ -474,6 +523,8 @@ static void set_active_screen(display_ui_screen_t screen)
         lv_obj_add_flag(s_locale_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_wifi_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_wifi_password_screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_watchlist_manage_screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_watchlist_add_screen, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(s_nav_label, LV_SYMBOL_SETTINGS " Settings");
     }
     else
@@ -555,10 +606,25 @@ static void update_statusbar(void)
         lv_label_set_text(s_settings_wifi_row_desc, "Not connected");
     }
     lv_label_set_text(s_settings_locale_row_desc, s_locale.time_24h ? "24-hour clock" : "12-hour clock");
+
+    uint8_t watchlist_count = app_state_symbol_count();
+    if (watchlist_count > SETTINGS_MAX_WATCHLIST)
+    {
+        watchlist_count = SETTINGS_MAX_WATCHLIST; // defensive; settings_store already bounds this
+    }
+    lv_label_set_text_fmt(s_settings_watchlist_row_desc, "%u of %u Binance pairs", (unsigned)watchlist_count,
+                           (unsigned)SETTINGS_MAX_WATCHLIST);
 }
 
 static void update_wifi_screen(void); // defined further down, alongside the rest of the Wi-Fi screen
 static void wifi_password_poll(void); // defined further down, alongside the rest of the password screen
+
+// Mutually referenced across the Watchlist manage/add screens (the add
+// screen's "Add to watchlist" rebuilds the manage list; the manage screen's
+// "Add symbol" row resets the add screen) - forward-declared here rather
+// than reordering the two screens' otherwise-independent code.
+static void watchlist_manage_rebuild(void);
+static void watchlist_add_screen_reset(void);
 
 static void update_timer_cb(lv_timer_t *timer)
 {
@@ -812,8 +878,13 @@ static lv_obj_t *build_settings_row(lv_obj_t *parent, const char *icon_symbol, c
 }
 
 // A sub-screen header: back arrow (calling back_cb) + title, matching the
-// reviewed design. Reused by every Settings sub-screen.
-static void build_subscreen_header(lv_obj_t *parent, const char *title, lv_event_cb_t back_cb)
+// reviewed design. Reused by every Settings sub-screen. subtitle is
+// optional (pass NULL for a title-only header, as every screen before
+// Watchlist symbols does); when given, it's rendered under the title and
+// the created label is returned so the caller can keep it live-updated
+// (e.g. "N of 10") - NULL is returned when subtitle is NULL.
+static lv_obj_t *build_subscreen_header(lv_obj_t *parent, const char *title, const char *subtitle,
+                                         lv_event_cb_t back_cb)
 {
     lv_obj_t *header = lv_obj_create(parent);
     lv_obj_remove_style_all(header);
@@ -842,10 +913,32 @@ static void build_subscreen_header(lv_obj_t *parent, const char *title, lv_event
     lv_obj_set_style_text_font(back_icon, &lv_font_montserrat_16, 0);
     lv_label_set_text(back_icon, LV_SYMBOL_LEFT);
 
-    lv_obj_t *title_label = lv_label_create(header);
+    if (subtitle == NULL)
+    {
+        lv_obj_t *title_label = lv_label_create(header);
+        lv_obj_set_style_text_color(title_label, COLOR_TEXT, 0);
+        lv_obj_set_style_text_font(title_label, &lv_font_montserrat_16, 0);
+        lv_label_set_text(title_label, title);
+        return NULL;
+    }
+
+    lv_obj_t *titles = lv_obj_create(header);
+    lv_obj_remove_style_all(titles);
+    make_plain_container(titles);
+    lv_obj_set_size(titles, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(titles, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(titles, 2, 0);
+
+    lv_obj_t *title_label = lv_label_create(titles);
     lv_obj_set_style_text_color(title_label, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(title_label, &lv_font_montserrat_16, 0);
     lv_label_set_text(title_label, title);
+
+    lv_obj_t *subtitle_label = lv_label_create(titles);
+    lv_obj_set_style_text_color(subtitle_label, COLOR_MUTED, 0);
+    lv_obj_set_style_text_font(subtitle_label, &lv_font_montserrat_12, 0);
+    lv_label_set_text(subtitle_label, subtitle);
+    return subtitle_label;
 }
 
 // Shared by both the SSID field (only when editable - the "Add Network"
@@ -1606,7 +1699,7 @@ static void build_wifi_screen(lv_obj_t *screen)
     lv_obj_set_size(s_wifi_screen, LV_PCT(100), BOARD_JC4880P443C_LCD_V_RES - STATUSBAR_HEIGHT_PX);
     lv_obj_set_flex_flow(s_wifi_screen, LV_FLEX_FLOW_COLUMN);
 
-    build_subscreen_header(s_wifi_screen, "Wi-Fi", settings_back_cb);
+    build_subscreen_header(s_wifi_screen, "Wi-Fi", NULL, settings_back_cb);
 
     // Matches the mockup's .section-label: a small uppercase muted heading
     // above the network list, not a status banner.
@@ -1649,7 +1742,7 @@ static void build_wifi_password_screen(lv_obj_t *screen)
     lv_obj_set_size(s_wifi_password_screen, LV_PCT(100), BOARD_JC4880P443C_LCD_V_RES - STATUSBAR_HEIGHT_PX);
     lv_obj_set_flex_flow(s_wifi_password_screen, LV_FLEX_FLOW_COLUMN);
 
-    build_subscreen_header(s_wifi_password_screen, "Add Network", wifi_password_back_cb);
+    build_subscreen_header(s_wifi_password_screen, "Add Network", NULL, wifi_password_back_cb);
 
     // SSID + password fields sit vertically centered in the space between
     // the header and the keyboard: this wrapper takes all the leftover
@@ -1781,10 +1874,672 @@ static void build_wifi_password_screen(lv_obj_t *screen)
     lv_obj_add_flag(s_wifi_password_keyboard, LV_OBJ_FLAG_HIDDEN);
 }
 
+// Rebuilds symbol_settings_t from app_state's current in-memory watchlist
+// and persists it - app_state_add_symbol()/app_state_remove_symbol() are
+// runtime-only (see their doc comments and docs/decisions/0007), so every
+// mutation here must be followed by this to survive a reboot.
+static void watchlist_save_current_symbols(void)
+{
+    symbol_settings_t cfg;
+    settings_symbols_init_default(&cfg);
+
+    uint8_t count = app_state_symbol_count();
+    if (count > SETTINGS_MAX_WATCHLIST)
+    {
+        count = SETTINGS_MAX_WATCHLIST;
+    }
+    cfg.count = count;
+    for (uint8_t i = 0; i < count; i++)
+    {
+        app_state_symbol_meta_t meta;
+        if (app_state_get_symbol_meta(i, &meta) != ESP_OK)
+        {
+            continue;
+        }
+        strncpy(cfg.symbols[i].ticker, meta.symbol, SETTINGS_SYMBOL_MAX_LEN);
+        cfg.symbols[i].ticker[SETTINGS_SYMBOL_MAX_LEN] = '\0';
+    }
+    settings_store_save_symbols(&cfg);
+}
+
+// ctx points into the static s_watchlist_click_ctx array - see its
+// declaration and s_wifi_click_ctx's comment for why a static (not
+// stack-local) array is used here.
+static void watchlist_remove_click_cb(lv_event_t *e)
+{
+    const watchlist_row_click_ctx_t *ctx = (const watchlist_row_click_ctx_t *)lv_event_get_user_data(e);
+    if (app_state_remove_symbol(ctx->index) != ESP_OK)
+    {
+        return;
+    }
+    watchlist_save_current_symbols();
+    watchlist_manage_rebuild();
+}
+
+// One row per watchlist symbol: ticker (flex-grow) + a small red remove
+// button. `index` selects this row's slot in s_watchlist_click_ctx - see
+// that array's declaration and build_wifi_ap_row()'s analogous comment.
+static void build_watchlist_symbol_row(const char *ticker, uint8_t index)
+{
+    lv_obj_t *row = lv_obj_create(s_watchlist_list);
+    lv_obj_remove_style_all(row);
+    make_plain_container(row);
+    lv_obj_set_size(row, LV_PCT(100), 58);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_left(row, 18, 0);
+    lv_obj_set_style_pad_right(row, 18, 0);
+    lv_obj_set_style_pad_column(row, 12, 0);
+    lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(row, 1, 0);
+    lv_obj_set_style_border_color(row, COLOR_HAIRLINE, 0);
+
+    lv_obj_t *ticker_label = lv_label_create(row);
+    lv_obj_set_flex_grow(ticker_label, 1);
+    lv_obj_set_style_text_color(ticker_label, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(ticker_label, &lv_font_montserrat_16, 0);
+    lv_label_set_text(ticker_label, ticker);
+
+    watchlist_row_click_ctx_t *ctx = &s_watchlist_click_ctx[index];
+    ctx->index = index;
+
+    lv_obj_t *remove_btn = lv_button_create(row);
+    lv_obj_remove_style_all(remove_btn);
+    make_plain_container(remove_btn);
+    lv_obj_add_flag(remove_btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(remove_btn, 28, 28);
+    lv_obj_set_style_radius(remove_btn, 8, 0);
+    lv_obj_set_style_bg_color(remove_btn, lv_color_hex(0x241318), 0);
+    lv_obj_set_style_bg_opa(remove_btn, LV_OPA_COVER, 0);
+    lv_obj_set_flex_flow(remove_btn, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(remove_btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_ext_click_area(remove_btn, 8);
+    lv_obj_add_event_cb(remove_btn, watchlist_remove_click_cb, LV_EVENT_CLICKED, ctx);
+
+    lv_obj_t *remove_icon = lv_label_create(remove_btn);
+    lv_obj_set_style_text_color(remove_icon, COLOR_DOWN, 0);
+    lv_label_set_text(remove_icon, LV_SYMBOL_TRASH);
+}
+
+static void watchlist_add_row_click_cb(lv_event_t *e)
+{
+    (void)e;
+    watchlist_add_screen_reset();
+    show_settings_view(SETTINGS_VIEW_WATCHLIST_ADD);
+}
+
+// "+ Add symbol" entry point, modeled on build_wifi_add_network_row()'s
+// bordered pill. Disabled (dimmed, non-clickable) at the watchlist cap per
+// docs/decisions/0007-watchlist-management.md: display_ui must gate this
+// itself rather than rely solely on app_state_add_symbol()'s ESP_ERR_NO_MEM.
+static void build_watchlist_add_row(lv_obj_t *parent, bool enabled)
+{
+    const int32_t addbtn_width_px = BOARD_JC4880P443C_LCD_H_RES - 2 * 18;
+
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_remove_style_all(row);
+    make_plain_container(row);
+    if (enabled)
+    {
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row, watchlist_add_row_click_cb, LV_EVENT_CLICKED, NULL);
+    }
+    lv_obj_set_size(row, addbtn_width_px, 46);
+    lv_obj_set_style_margin_left(row, 18, 0);
+    lv_obj_set_style_margin_top(row, 12, 0);
+    lv_obj_set_style_margin_bottom(row, 12, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 8, 0);
+    lv_obj_set_style_radius(row, 10, 0);
+    lv_obj_set_style_border_width(row, 1, 0);
+    lv_obj_set_style_border_color(row, COLOR_HAIRLINE, 0);
+    lv_obj_set_style_opa(row, enabled ? LV_OPA_COVER : LV_OPA_50, 0);
+
+    lv_obj_t *icon = lv_label_create(row);
+    lv_obj_set_style_text_color(icon, COLOR_MUTED, 0);
+    lv_obj_set_style_text_font(icon, &lv_font_montserrat_18, 0);
+    lv_label_set_text(icon, LV_SYMBOL_PLUS);
+
+    lv_obj_t *label = lv_label_create(row);
+    lv_obj_set_style_text_color(label, COLOR_MUTED, 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
+    lv_label_set_text(label, "Add symbol");
+}
+
+// Tears down and rebuilds the symbol list + "Add symbol" row from
+// app_state's current watchlist. Called whenever the Manage screen is
+// entered and after every add/remove - this is a Settings action, not a
+// per-tick poll, so (unlike update_wifi_screen()) an unconditional rebuild
+// on every call is fine; nothing here runs concurrently with a tap on one
+// of these rows.
+static void watchlist_manage_rebuild(void)
+{
+    uint8_t count = app_state_symbol_count();
+    if (count > SETTINGS_MAX_WATCHLIST)
+    {
+        count = SETTINGS_MAX_WATCHLIST;
+    }
+    lv_label_set_text_fmt(s_watchlist_manage_subtitle, "%u of %u", (unsigned)count, (unsigned)SETTINGS_MAX_WATCHLIST);
+
+    lv_obj_clean(s_watchlist_list);
+    for (uint8_t i = 0; i < count; i++)
+    {
+        app_state_symbol_meta_t meta;
+        if (app_state_get_symbol_meta(i, &meta) != ESP_OK)
+        {
+            continue;
+        }
+        build_watchlist_symbol_row(meta.symbol, i);
+    }
+    build_watchlist_add_row(s_watchlist_list, count < SETTINGS_MAX_WATCHLIST);
+}
+
+static void watchlist_manage_back_cb(lv_event_t *e)
+{
+    (void)e;
+    show_settings_view(SETTINGS_VIEW_LIST);
+}
+
+static void build_watchlist_manage_screen(lv_obj_t *screen)
+{
+    s_watchlist_manage_screen = lv_obj_create(screen);
+    lv_obj_remove_style_all(s_watchlist_manage_screen);
+    make_plain_container(s_watchlist_manage_screen);
+    lv_obj_set_size(s_watchlist_manage_screen, LV_PCT(100), BOARD_JC4880P443C_LCD_V_RES - STATUSBAR_HEIGHT_PX);
+    lv_obj_set_flex_flow(s_watchlist_manage_screen, LV_FLEX_FLOW_COLUMN);
+
+    s_watchlist_manage_subtitle =
+        build_subscreen_header(s_watchlist_manage_screen, "Watchlist symbols", "--", watchlist_manage_back_cb);
+
+    s_watchlist_list = lv_obj_create(s_watchlist_manage_screen);
+    lv_obj_remove_style_all(s_watchlist_list);
+    // Genuinely scrollable (up to SETTINGS_MAX_WATCHLIST rows plus the "Add
+    // symbol" pill can run longer than the screen) - same flag treatment as
+    // s_wifi_list, see its comment.
+    lv_obj_remove_flag(s_watchlist_list, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE | LV_OBJ_FLAG_PRESS_LOCK |
+                                              LV_OBJ_FLAG_GESTURE_BUBBLE | LV_OBJ_FLAG_SNAPPABLE);
+    lv_obj_set_width(s_watchlist_list, LV_PCT(100));
+    lv_obj_set_flex_grow(s_watchlist_list, 1);
+    lv_obj_set_flex_flow(s_watchlist_list, LV_FLEX_FLOW_COLUMN);
+}
+
+// --- Add symbol screen ---
+
+// The exact same keyboard as the Wi-Fi password screen (lowercase/uppercase
+// letters + two symbol pages, full shift/mode-switch set) rather than a
+// restricted ticker-only layout - the only difference from
+// s_wifi_kb_map_lc/uc/sym_1/sym_2 is the accent action key ("Search"
+// instead of "Connect"). Whatever the user actually types gets sanitized
+// (stripped of non-alphanumerics, upper-cased) in watchlist_add_check_cb()
+// before it's sent as a symbol, so allowing the full keyboard here (spaces,
+// punctuation, lowercase) is harmless - same reasoning as letting the Wi-Fi
+// SSID field accept anything and validating server-side.
+
+// Custom mode IDs beyond LVGL's built-in TEXT_LOWER/TEXT_UPPER, used with
+// lv_keyboard_set_mode() below - same technique as WIFI_KB_MODE_SYM_1/2
+// (distinct macro names since both live in this same translation unit).
+#define WATCHLIST_KB_MODE_SYM_1 2
+#define WATCHLIST_KB_MODE_SYM_2 3
+
+static const char *const s_watchlist_kb_map_lc[] = {
+    "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
+    "a", "s", "d", "f", "g", "h", "j", "k", "l", "\n",
+    "ABC", "z", "x", "c", "v", "b", "n", "m", LV_SYMBOL_BACKSPACE, "\n",
+    "123", " ", "Search", "",
+};
+
+static const char *const s_watchlist_kb_map_uc[] = {
+    "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
+    "A", "S", "D", "F", "G", "H", "J", "K", "L", "\n",
+    "abc", "Z", "X", "C", "V", "B", "N", "M", LV_SYMBOL_BACKSPACE, "\n",
+    "123", " ", "Search", "",
+};
+
+static const char *const s_watchlist_kb_map_sym_1[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
+    "-", "_", ".", ",", ":", ";", "@", "(", ")", "\n",
+    "#+=", "'", "\"", "!", "?", "*", LV_SYMBOL_BACKSPACE, "\n",
+    "abc", " ", "Search", "",
+};
+
+static const char *const s_watchlist_kb_map_sym_2[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
+    "/", "\\", "+", "=", "<", ">", "#", "[", "]", "\n",
+    "!?*", "{", "}", "%", "&", "$", LV_SYMBOL_BACKSPACE, "\n",
+    "abc", " ", "Search", "",
+};
+
+static const lv_buttonmatrix_ctrl_t s_watchlist_kb_ctrl_map[] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // row 1: 10 keys
+    1, 1, 1, 1, 1, 1, 1, 1, 1,    // row 2: 9 keys
+    2, 1, 1, 1, 1, 1, 1, 1, 2,    // row 3: shift (2x), 7 keys (1x), backspace (2x)
+    2, 5, 3, 1,                  // row 4: mode-switch (2x), space (5x), Check symbol (3x), padding
+};
+
+static const lv_buttonmatrix_ctrl_t s_watchlist_kb_ctrl_map_sym[] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // row 1: 10 keys
+    1, 1, 1, 1, 1, 1, 1, 1, 1,    // row 2: 9 keys
+    2, 1, 1, 1, 1, 1, 2,          // row 3: mode-switch (2x), 5 keys (1x), backspace (2x)
+    2, 5, 3, 1,                  // row 4: "abc" (2x), space (5x), Check symbol (3x), padding
+};
+
+static void watchlist_add_check_cb(lv_event_t *e); // defined below, referenced by the keyboard event cb
+
+// Same intercept-and-delegate shape as wifi_keyboard_event_cb(): owns every
+// mode-switch button directly, delegates letters/space/backspace to the
+// default handler.
+static void watchlist_add_keyboard_event_cb(lv_event_t *e)
+{
+    lv_obj_t *kb = lv_event_get_target(e);
+    uint32_t btn_id = lv_buttonmatrix_get_selected_button(kb);
+    if (btn_id == LV_BUTTONMATRIX_BUTTON_NONE)
+    {
+        return;
+    }
+
+    const char *txt = lv_buttonmatrix_get_button_text(kb, btn_id);
+    if (txt == NULL)
+    {
+        return;
+    }
+
+    if (strcmp(txt, "Search") == 0)
+    {
+        watchlist_add_check_cb(e);
+        return;
+    }
+    if (strcmp(txt, "ABC") == 0)
+    {
+        lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_UPPER);
+        return;
+    }
+    if (strcmp(txt, "abc") == 0)
+    {
+        lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+        return;
+    }
+    if (strcmp(txt, "123") == 0 || strcmp(txt, "!?*") == 0)
+    {
+        lv_keyboard_set_mode(kb, WATCHLIST_KB_MODE_SYM_1);
+        return;
+    }
+    if (strcmp(txt, "#+=") == 0)
+    {
+        lv_keyboard_set_mode(kb, WATCHLIST_KB_MODE_SYM_2);
+        return;
+    }
+
+    lv_keyboard_def_event_cb(e);
+}
+
+// Hides both result states (match card / error note) and the "Add to
+// watchlist" button - the screen's starting state, and the state after any
+// edit to the field following a check (mockup doesn't keep a stale result
+// visible once the user starts retyping... but per the reviewed design,
+// the keyboard/result actually *does* stay up across repeated checks; this
+// is only used on screen entry/reset, not after every keystroke).
+static void watchlist_add_hide_result(void)
+{
+    lv_obj_add_flag(s_watchlist_match_card, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_watchlist_error_note, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_watchlist_add_button, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_watchlist_status_label, LV_OBJ_FLAG_HIDDEN);
+    s_watchlist_match_valid = false;
+}
+
+// Fires on every edit to the symbol field (typing, backspace, paste) -
+// a match/error from a previously-checked symbol shouldn't linger once the
+// user starts changing what they typed. Also fires for the reset's own
+// lv_textarea_set_text(""), which is harmless (nothing to hide yet there).
+static void watchlist_symbol_input_changed_cb(lv_event_t *e)
+{
+    (void)e;
+    watchlist_add_hide_result();
+}
+
+// Resets the screen to its empty, pre-check state - called every time this
+// screen is entered so a stale match/error from a previous symbol never
+// carries over.
+static void watchlist_add_screen_reset(void)
+{
+    lv_textarea_set_text(s_watchlist_symbol_input, "");
+    watchlist_add_hide_result();
+
+    uint8_t count = app_state_symbol_count();
+    if (count > SETTINGS_MAX_WATCHLIST)
+    {
+        count = SETTINGS_MAX_WATCHLIST;
+    }
+    lv_label_set_text_fmt(s_watchlist_add_subtitle, "%u of %u used", (unsigned)count, (unsigned)SETTINGS_MAX_WATCHLIST);
+}
+
+// Strips everything but letters/digits from raw and upper-cases the rest
+// into out (capacity out_cap, always NUL-terminated) - so stray spaces,
+// punctuation, or lowercase entered on the full keyboard above still
+// produce a well-formed Binance pair (e.g. "ltc usdt!" -> "LTCUSDT").
+// Returns the sanitized length.
+static size_t watchlist_sanitize_symbol(const char *raw, char *out, size_t out_cap)
+{
+    size_t n = 0;
+    for (const char *p = raw; *p != '\0' && n + 1 < out_cap; p++)
+    {
+        if (isalnum((unsigned char)*p))
+        {
+            out[n++] = (char)toupper((unsigned char)*p);
+        }
+    }
+    out[n] = '\0';
+    return n;
+}
+
+// Fires from the keyboard's "Search" key. Blocking, like every other
+// market_data_client call - this runs synchronously on the LVGL task for
+// the ~0.5-2s HTTPS round trip (see docs/decisions on this screen's scope:
+// no background-task/queue scaffolding for this slice, matching every
+// existing market_data_client call site). A "Searching..." label plus an
+// explicit lv_refr_now() flushes that state to the display before the
+// blocking call, since LVGL otherwise wouldn't redraw until this callback
+// returns.
+static void watchlist_add_check_cb(lv_event_t *e)
+{
+    (void)e;
+    char symbol[SETTINGS_SYMBOL_MAX_LEN + 1];
+    if (watchlist_sanitize_symbol(lv_textarea_get_text(s_watchlist_symbol_input), symbol, sizeof(symbol)) == 0)
+    {
+        return;
+    }
+
+    lv_obj_add_flag(s_watchlist_match_card, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_watchlist_error_note, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_watchlist_add_button, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_text_color(s_watchlist_status_label, COLOR_MUTED, 0);
+    lv_label_set_text(s_watchlist_status_label, "Searching...");
+    lv_obj_remove_flag(s_watchlist_status_label, LV_OBJ_FLAG_HIDDEN);
+    lv_refr_now(NULL);
+
+    market_data_ticker_24hr_t ticker;
+    market_data_err_t err = market_data_client_fetch_ticker_24hr(symbol, &ticker);
+    lv_obj_add_flag(s_watchlist_status_label, LV_OBJ_FLAG_HIDDEN);
+
+    if (err == MARKET_DATA_OK)
+    {
+        strncpy(s_watchlist_pending_symbol, symbol, SETTINGS_SYMBOL_MAX_LEN);
+        s_watchlist_pending_symbol[SETTINGS_SYMBOL_MAX_LEN] = '\0';
+        s_watchlist_match_valid = true;
+
+        lv_label_set_text(s_watchlist_match_pair_label, s_watchlist_pending_symbol);
+
+        char price_buf[24];
+        char hi_buf[24];
+        char lo_buf[24];
+        char range_buf[2 * sizeof(hi_buf) + 4];
+        char change_buf[16];
+        format_price(ticker.last_price, price_buf, sizeof(price_buf));
+        format_price(ticker.high_price, hi_buf, sizeof(hi_buf));
+        format_price(ticker.low_price, lo_buf, sizeof(lo_buf));
+        snprintf(range_buf, sizeof(range_buf), "%s / %s", hi_buf, lo_buf);
+        snprintf(change_buf, sizeof(change_buf), "%+.2f%%", ticker.price_change_percent);
+
+        lv_label_set_text(s_watchlist_match_last_price_label, price_buf);
+        lv_obj_set_style_text_color(s_watchlist_match_change_label,
+                                     ticker.price_change_percent >= 0.0 ? COLOR_UP : COLOR_DOWN, 0);
+        lv_label_set_text(s_watchlist_match_change_label, change_buf);
+        lv_label_set_text(s_watchlist_match_range_label, range_buf);
+
+        lv_obj_remove_flag(s_watchlist_match_card, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(s_watchlist_add_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_watchlist_error_note, LV_OBJ_FLAG_HIDDEN);
+    }
+    else
+    {
+        s_watchlist_match_valid = false;
+        lv_obj_add_flag(s_watchlist_match_card, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_watchlist_add_button, LV_OBJ_FLAG_HIDDEN);
+
+        const char *msg = (err == MARKET_DATA_ERR_SYMBOL_NOT_FOUND)
+                               ? "isn't a Binance spot pair. Check the spelling."
+                               : "Couldn't reach Binance. Try again.";
+        lv_label_set_text_fmt(s_watchlist_error_label, "%s %s", symbol, msg);
+        lv_obj_remove_flag(s_watchlist_error_note, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+// Fires from the "Add to watchlist" button, shown only after a successful
+// check. Persists the symbol that was actually validated
+// (s_watchlist_pending_symbol), not necessarily whatever text is currently
+// in the field.
+static void watchlist_add_to_watchlist_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_watchlist_match_valid)
+    {
+        return;
+    }
+    if (app_state_add_symbol(s_watchlist_pending_symbol) != ESP_OK)
+    {
+        return;
+    }
+    watchlist_save_current_symbols();
+    watchlist_manage_rebuild();
+    show_settings_view(SETTINGS_VIEW_WATCHLIST_MANAGE);
+}
+
+static void watchlist_add_back_cb(lv_event_t *e)
+{
+    (void)e;
+    show_settings_view(SETTINGS_VIEW_WATCHLIST_MANAGE);
+}
+
+// One "key: value" column, used three times in the match card (last price,
+// 24h change, 24h range). Returns the value label so the caller can update it.
+static lv_obj_t *build_watchlist_stat(lv_obj_t *parent, const char *key_text)
+{
+    lv_obj_t *col = lv_obj_create(parent);
+    lv_obj_remove_style_all(col);
+    make_plain_container(col);
+    lv_obj_set_size(col, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(col, 3, 0);
+
+    lv_obj_t *key_label = lv_label_create(col);
+    lv_obj_set_style_text_color(key_label, lv_color_hex(0x5E8F73), 0); // muted green, matches the match-card's tint
+    lv_obj_set_style_text_font(key_label, &lv_font_montserrat_12, 0);
+    lv_label_set_text(key_label, key_text);
+
+    lv_obj_t *value_label = lv_label_create(col);
+    lv_obj_set_style_text_color(value_label, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(value_label, &lv_font_montserrat_14, 0);
+    lv_label_set_text(value_label, "--");
+    return value_label;
+}
+
+static void build_watchlist_add_screen(lv_obj_t *screen)
+{
+    s_watchlist_add_screen = lv_obj_create(screen);
+    lv_obj_remove_style_all(s_watchlist_add_screen);
+    make_plain_container(s_watchlist_add_screen);
+    lv_obj_set_size(s_watchlist_add_screen, LV_PCT(100), BOARD_JC4880P443C_LCD_V_RES - STATUSBAR_HEIGHT_PX);
+    lv_obj_set_flex_flow(s_watchlist_add_screen, LV_FLEX_FLOW_COLUMN);
+
+    s_watchlist_add_subtitle = build_subscreen_header(s_watchlist_add_screen, "Add symbol", "--", watchlist_add_back_cb);
+
+    const int32_t field_row_width_px = (int32_t)(BOARD_JC4880P443C_LCD_H_RES * 9 / 10) + 20;
+    const int32_t field_vpad_px = (WIFI_PASSWORD_FIELD_HEIGHT_PX - lv_font_get_line_height(&lv_font_montserrat_16)) / 2;
+
+    // Everything above the keyboard sits in one flex_grow:1 wrapper, so it
+    // fills the leftover space and the keyboard stays pinned to the bottom
+    // regardless of whether the match card/error note is showing - same
+    // technique as build_wifi_password_screen()'s fields_wrap.
+    lv_obj_t *content_wrap = lv_obj_create(s_watchlist_add_screen);
+    lv_obj_remove_style_all(content_wrap);
+    make_plain_container(content_wrap);
+    lv_obj_set_size(content_wrap, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(content_wrap, 1);
+    lv_obj_set_flex_flow(content_wrap, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(content_wrap, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    lv_obj_t *input_label = lv_label_create(content_wrap);
+    lv_obj_set_style_text_color(input_label, COLOR_MUTED, 0);
+    lv_obj_set_style_text_font(input_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_letter_space(input_label, 1, 0);
+    lv_obj_set_style_pad_left(input_label, 20, 0);
+    lv_obj_set_style_pad_top(input_label, 14, 0);
+    lv_label_set_text(input_label, "BINANCE PAIR");
+
+    lv_obj_t *field_wrap = lv_obj_create(content_wrap);
+    lv_obj_remove_style_all(field_wrap);
+    make_plain_container(field_wrap);
+    lv_obj_set_size(field_wrap, field_row_width_px, LV_SIZE_CONTENT);
+    lv_obj_set_style_margin_left(field_wrap, 20, 0);
+    lv_obj_set_style_margin_top(field_wrap, 8, 0);
+
+    s_watchlist_symbol_input = lv_textarea_create(field_wrap);
+    style_dark_textarea(s_watchlist_symbol_input);
+    lv_textarea_set_one_line(s_watchlist_symbol_input, true);
+    lv_textarea_set_max_length(s_watchlist_symbol_input, SETTINGS_SYMBOL_MAX_LEN);
+    lv_obj_set_width(s_watchlist_symbol_input, LV_PCT(100));
+    lv_obj_set_height(s_watchlist_symbol_input, WIFI_PASSWORD_FIELD_HEIGHT_PX);
+    lv_obj_set_style_pad_top(s_watchlist_symbol_input, field_vpad_px, 0);
+    lv_obj_set_style_pad_bottom(s_watchlist_symbol_input, field_vpad_px, 0);
+    lv_obj_set_style_border_width(s_watchlist_symbol_input, 0, 0);
+    lv_obj_add_event_cb(s_watchlist_symbol_input, watchlist_symbol_input_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    lv_obj_t *hint_label = lv_label_create(content_wrap);
+    lv_obj_set_style_text_color(hint_label, COLOR_MUTED, 0);
+    lv_obj_set_style_text_font(hint_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_width(hint_label, field_row_width_px);
+    lv_label_set_long_mode(hint_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_margin_left(hint_label, 20, 0);
+    lv_obj_set_style_pad_top(hint_label, 8, 0);
+    lv_label_set_text(hint_label, "Type the exact pair, e.g. LTCUSDT - not a name search.");
+
+    // "Searching..." indicator - only visible while watchlist_add_check_cb()'s
+    // blocking market_data_client call is in flight.
+    s_watchlist_status_label = lv_label_create(content_wrap);
+    lv_obj_set_style_text_font(s_watchlist_status_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_margin_left(s_watchlist_status_label, 20, 0);
+    lv_obj_set_style_pad_top(s_watchlist_status_label, 10, 0);
+    lv_label_set_text(s_watchlist_status_label, "");
+
+    // Match card: populated and shown only after a successful "Search".
+    s_watchlist_match_card = lv_obj_create(content_wrap);
+    lv_obj_remove_style_all(s_watchlist_match_card);
+    make_plain_container(s_watchlist_match_card);
+    lv_obj_set_size(s_watchlist_match_card, field_row_width_px, LV_SIZE_CONTENT);
+    lv_obj_set_style_margin_left(s_watchlist_match_card, 20, 0);
+    lv_obj_set_style_margin_top(s_watchlist_match_card, 14, 0);
+    lv_obj_set_style_pad_all(s_watchlist_match_card, 14, 0);
+    lv_obj_set_style_radius(s_watchlist_match_card, 12, 0);
+    lv_obj_set_style_bg_color(s_watchlist_match_card, lv_color_hex(0x0F2A1E), 0);
+    lv_obj_set_style_bg_opa(s_watchlist_match_card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_watchlist_match_card, 1, 0);
+    lv_obj_set_style_border_color(s_watchlist_match_card, lv_color_hex(0x1E4430), 0);
+    lv_obj_set_flex_flow(s_watchlist_match_card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_watchlist_match_card, 8, 0);
+
+    s_watchlist_match_pair_label = lv_label_create(s_watchlist_match_card);
+    lv_obj_set_style_text_color(s_watchlist_match_pair_label, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(s_watchlist_match_pair_label, &lv_font_montserrat_18, 0);
+
+    lv_obj_t *avail_row = lv_obj_create(s_watchlist_match_card);
+    lv_obj_remove_style_all(avail_row);
+    make_plain_container(avail_row);
+    lv_obj_set_size(avail_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(avail_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(avail_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(avail_row, 6, 0);
+
+    lv_obj_t *avail_icon = lv_label_create(avail_row);
+    lv_obj_set_style_text_color(avail_icon, COLOR_UP, 0);
+    lv_label_set_text(avail_icon, LV_SYMBOL_OK);
+
+    lv_obj_t *avail_label = lv_label_create(avail_row);
+    lv_obj_set_style_text_color(avail_label, COLOR_UP, 0);
+    lv_obj_set_style_text_font(avail_label, &lv_font_montserrat_12, 0);
+    lv_label_set_text(avail_label, "Found on Binance");
+
+    lv_obj_t *stats_row = lv_obj_create(s_watchlist_match_card);
+    lv_obj_remove_style_all(stats_row);
+    make_plain_container(stats_row);
+    lv_obj_set_size(stats_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(stats_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(stats_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    s_watchlist_match_last_price_label = build_watchlist_stat(stats_row, "LAST PRICE");
+    s_watchlist_match_change_label = build_watchlist_stat(stats_row, "24H CHANGE");
+    s_watchlist_match_range_label = build_watchlist_stat(stats_row, "24H HIGH / LOW");
+
+    // Error note: shown only after a failed "Search".
+    s_watchlist_error_note = lv_obj_create(content_wrap);
+    lv_obj_remove_style_all(s_watchlist_error_note);
+    make_plain_container(s_watchlist_error_note);
+    lv_obj_set_size(s_watchlist_error_note, field_row_width_px, LV_SIZE_CONTENT);
+    lv_obj_set_style_margin_left(s_watchlist_error_note, 20, 0);
+    lv_obj_set_style_margin_top(s_watchlist_error_note, 14, 0);
+    lv_obj_set_style_pad_all(s_watchlist_error_note, 12, 0);
+    lv_obj_set_style_radius(s_watchlist_error_note, 10, 0);
+    lv_obj_set_style_bg_color(s_watchlist_error_note, lv_color_hex(0x241318), 0);
+    lv_obj_set_style_bg_opa(s_watchlist_error_note, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_watchlist_error_note, 1, 0);
+    lv_obj_set_style_border_color(s_watchlist_error_note, lv_color_hex(0x3A1B22), 0);
+
+    s_watchlist_error_label = lv_label_create(s_watchlist_error_note);
+    lv_obj_set_style_text_color(s_watchlist_error_label, lv_color_hex(0xFF8B95), 0);
+    lv_obj_set_style_text_font(s_watchlist_error_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_width(s_watchlist_error_label, LV_PCT(100));
+    lv_label_set_long_mode(s_watchlist_error_label, LV_LABEL_LONG_WRAP);
+
+    // "Add to watchlist": shown only after a successful check.
+    s_watchlist_add_button = lv_button_create(content_wrap);
+    lv_obj_remove_style_all(s_watchlist_add_button);
+    make_plain_container(s_watchlist_add_button);
+    lv_obj_add_flag(s_watchlist_add_button, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(s_watchlist_add_button, field_row_width_px, 44);
+    lv_obj_set_style_margin_left(s_watchlist_add_button, 20, 0);
+    lv_obj_set_style_margin_top(s_watchlist_add_button, 14, 0);
+    lv_obj_set_style_radius(s_watchlist_add_button, 9, 0);
+    lv_obj_set_style_bg_color(s_watchlist_add_button, COLOR_ACCENT, 0);
+    lv_obj_set_style_bg_opa(s_watchlist_add_button, LV_OPA_COVER, 0);
+    lv_obj_set_flex_flow(s_watchlist_add_button, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_watchlist_add_button, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_event_cb(s_watchlist_add_button, watchlist_add_to_watchlist_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *add_button_label = lv_label_create(s_watchlist_add_button);
+    lv_obj_set_style_text_color(add_button_label, lv_color_hex(0x04141C), 0);
+    lv_obj_set_style_text_font(add_button_label, &lv_font_montserrat_14, 0);
+    lv_label_set_text(add_button_label, "Add to watchlist");
+
+    watchlist_add_hide_result(); // starts with neither result state visible
+
+    s_watchlist_add_keyboard = lv_keyboard_create(s_watchlist_add_screen);
+    style_dark_keyboard(s_watchlist_add_keyboard);
+    lv_obj_set_height(s_watchlist_add_keyboard, (BOARD_JC4880P443C_LCD_V_RES - STATUSBAR_HEIGHT_PX) / 2 - 50);
+    lv_keyboard_set_map(s_watchlist_add_keyboard, LV_KEYBOARD_MODE_TEXT_LOWER, s_watchlist_kb_map_lc,
+                         s_watchlist_kb_ctrl_map);
+    lv_keyboard_set_map(s_watchlist_add_keyboard, LV_KEYBOARD_MODE_TEXT_UPPER, s_watchlist_kb_map_uc,
+                         s_watchlist_kb_ctrl_map);
+    lv_keyboard_set_map(s_watchlist_add_keyboard, WATCHLIST_KB_MODE_SYM_1, s_watchlist_kb_map_sym_1,
+                         s_watchlist_kb_ctrl_map_sym);
+    lv_keyboard_set_map(s_watchlist_add_keyboard, WATCHLIST_KB_MODE_SYM_2, s_watchlist_kb_map_sym_2,
+                         s_watchlist_kb_ctrl_map_sym);
+    lv_keyboard_set_mode(s_watchlist_add_keyboard, LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_keyboard_set_textarea(s_watchlist_add_keyboard, s_watchlist_symbol_input);
+    lv_obj_remove_event_cb(s_watchlist_add_keyboard, lv_keyboard_def_event_cb);
+    lv_obj_add_event_cb(s_watchlist_add_keyboard, watchlist_add_keyboard_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+}
+
 static void locale_row_click_cb(lv_event_t *e)
 {
     (void)e;
     show_settings_view(SETTINGS_VIEW_LOCALE);
+}
+
+static void watchlist_row_click_cb(lv_event_t *e)
+{
+    (void)e;
+    watchlist_manage_rebuild();
+    show_settings_view(SETTINGS_VIEW_WATCHLIST_MANAGE);
 }
 
 static void build_settings_list(lv_obj_t *screen)
@@ -1819,6 +2574,8 @@ static void build_settings_list(lv_obj_t *screen)
     // the closest available placeholder, not a dedicated "date & time" icon.
     s_settings_locale_row_desc =
         build_settings_row(s_settings_list, LV_SYMBOL_SETTINGS, "Date & time", "--", locale_row_click_cb);
+    s_settings_watchlist_row_desc =
+        build_settings_row(s_settings_list, LV_SYMBOL_LIST, "Watchlist symbols", "--", watchlist_row_click_cb);
 }
 
 static void locale_24h_toggle_cb(lv_event_t *e)
@@ -1836,7 +2593,7 @@ static void build_locale_screen(lv_obj_t *screen)
     lv_obj_set_size(s_locale_screen, LV_PCT(100), BOARD_JC4880P443C_LCD_V_RES - STATUSBAR_HEIGHT_PX);
     lv_obj_set_flex_flow(s_locale_screen, LV_FLEX_FLOW_COLUMN);
 
-    build_subscreen_header(s_locale_screen, "Date & time", settings_back_cb);
+    build_subscreen_header(s_locale_screen, "Date & time", NULL, settings_back_cb);
 
     lv_obj_t *toggle_row = lv_obj_create(s_locale_screen);
     lv_obj_remove_style_all(toggle_row);
@@ -1884,6 +2641,8 @@ static void display_ui_render(void)
     build_locale_screen(screen);
     build_wifi_screen(screen);
     build_wifi_password_screen(screen);
+    build_watchlist_manage_screen(screen);
+    build_watchlist_add_screen(screen);
     build_statusbar(screen);
 
     set_active_screen(DISPLAY_UI_SCREEN_WATCHLIST);
@@ -1975,6 +2734,23 @@ static int cmd_nav(int argc, char **argv)
         lv_keyboard_set_textarea(s_wifi_password_keyboard, s_wifi_password_input);
         lv_obj_remove_flag(s_wifi_password_keyboard, LV_OBJ_FLAG_HIDDEN);
     }
+    else if (strcmp(target, "watchlist_manage") == 0)
+    {
+        set_active_screen(DISPLAY_UI_SCREEN_SETTINGS);
+        watchlist_manage_rebuild();
+        show_settings_view(SETTINGS_VIEW_WATCHLIST_MANAGE);
+    }
+    else if (strcmp(target, "watchlist_add") == 0)
+    {
+        set_active_screen(DISPLAY_UI_SCREEN_SETTINGS);
+        watchlist_add_screen_reset();
+        show_settings_view(SETTINGS_VIEW_WATCHLIST_ADD);
+
+        // Mirrors the real screen-entry state - a tapped textarea would show
+        // the keyboard too, and this screen reads as empty without it.
+        lv_keyboard_set_textarea(s_watchlist_add_keyboard, s_watchlist_symbol_input);
+        lv_obj_remove_flag(s_watchlist_add_keyboard, LV_OBJ_FLAG_HIDDEN);
+    }
     else
     {
         board_jc4880p443c_display_unlock();
@@ -1991,7 +2767,8 @@ esp_err_t display_ui_register_dev_nav_console(void)
 {
     const esp_console_cmd_t nav_cmd = {
         .command = "nav",
-        .help = "Jump directly to a screen: watchlist | settings | wifi | wifi_password [ssid] (dev builds only)",
+        .help = "Jump directly to a screen: watchlist | settings | wifi | wifi_password [ssid] | "
+                "watchlist_manage | watchlist_add (dev builds only)",
         .hint = NULL,
         .func = &cmd_nav,
     };

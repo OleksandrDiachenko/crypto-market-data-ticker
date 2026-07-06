@@ -39,6 +39,26 @@ market_data_err_t market_data_url_build_exchange_info(const char *base_url, cons
     return MARKET_DATA_OK;
 }
 
+market_data_err_t market_data_url_build_ticker_24hr(const char *base_url, const char *symbol, char *out,
+                                                     size_t out_capacity)
+{
+    if (base_url == NULL || out == NULL || out_capacity == 0)
+    {
+        return MARKET_DATA_ERR_INVALID_ARG;
+    }
+    if (!is_alnum_str(symbol))
+    {
+        return MARKET_DATA_ERR_INVALID_ARG;
+    }
+
+    int written = snprintf(out, out_capacity, "%s/api/v3/ticker/24hr?symbol=%s", base_url, symbol);
+    if (written < 0 || (size_t)written >= out_capacity)
+    {
+        return MARKET_DATA_ERR_INVALID_ARG;
+    }
+    return MARKET_DATA_OK;
+}
+
 market_data_err_t market_data_url_build_klines(const char *base_url, const market_data_klines_request_t *req,
                                                 char *out, size_t out_capacity)
 {

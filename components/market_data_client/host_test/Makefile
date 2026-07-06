@@ -9,7 +9,8 @@ TEST_NAMES = \
 	test_market_data_url \
 	test_market_data_json_scanner \
 	test_market_data_symbol_parser \
-	test_market_data_klines_parser
+	test_market_data_klines_parser \
+	test_market_data_ticker_parser
 
 TESTS = $(addprefix $(BUILD_DIR)/,$(TEST_NAMES))
 
@@ -32,6 +33,9 @@ $(BUILD_DIR)/test_market_data_symbol_parser: test_market_data_symbol_parser.c $(
 
 $(BUILD_DIR)/test_market_data_klines_parser: test_market_data_klines_parser.c $(SRC_DIR)/market_data_klines_parser.c $(SCANNER_SOURCES) test_common.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ test_market_data_klines_parser.c $(SRC_DIR)/market_data_klines_parser.c $(SCANNER_SOURCES)
+
+$(BUILD_DIR)/test_market_data_ticker_parser: test_market_data_ticker_parser.c $(SRC_DIR)/market_data_ticker_parser.c $(SCANNER_SOURCES) test_common.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ test_market_data_ticker_parser.c $(SRC_DIR)/market_data_ticker_parser.c $(SCANNER_SOURCES)
 
 clean:
 	rm -rf $(BUILD_DIR)

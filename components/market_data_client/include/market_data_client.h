@@ -55,6 +55,25 @@ static inline bool market_data_symbol_is_usable(const market_data_symbol_status_
 // for symbols Binance doesn't recognize at all.
 market_data_err_t market_data_client_fetch_symbol_status(const char *symbol, market_data_symbol_status_t *out_status);
 
+// --- ticker/24hr ---
+
+typedef struct
+{
+    double last_price;
+    double price_change_percent;
+    double high_price;
+    double low_price;
+} market_data_ticker_24hr_t;
+
+// Fetches GET /api/v3/ticker/24hr?symbol=<symbol>. On MARKET_DATA_OK,
+// *out_ticker is fully populated. MARKET_DATA_ERR_SYMBOL_NOT_FOUND is
+// returned for a symbol Binance doesn't recognize (HTTP 400 + Binance error
+// code -1121 "Invalid symbol") - same convention as
+// market_data_client_fetch_symbol_status(). Unlike exchangeInfo, this
+// endpoint has no separate "exists but not tradable" state to report, so a
+// successful fetch is sufficient evidence the pair is valid and quotable.
+market_data_err_t market_data_client_fetch_ticker_24hr(const char *symbol, market_data_ticker_24hr_t *out_ticker);
+
 // --- klines ---
 
 #define MARKET_DATA_KLINES_MAX_LIMIT 500 // Binance's documented per-request ceiling; this

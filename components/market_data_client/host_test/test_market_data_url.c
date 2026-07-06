@@ -25,6 +25,21 @@ static void test_exchange_info_rejects_non_alnum_symbol(void)
           MARKET_DATA_ERR_INVALID_ARG);
 }
 
+static void test_ticker_24hr_url(void)
+{
+    char out[128];
+    market_data_err_t err = market_data_url_build_ticker_24hr("https://api.binance.com", "LTCUSDT", out, sizeof(out));
+    CHECK(err == MARKET_DATA_OK);
+    CHECK_STREQ(out, "https://api.binance.com/api/v3/ticker/24hr?symbol=LTCUSDT");
+}
+
+static void test_ticker_24hr_rejects_non_alnum_symbol(void)
+{
+    char out[128];
+    CHECK(market_data_url_build_ticker_24hr("https://api.binance.com", "LTC/USDT", out, sizeof(out)) ==
+          MARKET_DATA_ERR_INVALID_ARG);
+}
+
 static void test_klines_url_minimal(void)
 {
     market_data_klines_request_t req = {
@@ -114,6 +129,8 @@ int main(void)
     test_exchange_info_url();
     test_exchange_info_rejects_empty_symbol();
     test_exchange_info_rejects_non_alnum_symbol();
+    test_ticker_24hr_url();
+    test_ticker_24hr_rejects_non_alnum_symbol();
     test_klines_url_minimal();
     test_klines_url_with_limit();
     test_klines_url_with_start_and_end_time();

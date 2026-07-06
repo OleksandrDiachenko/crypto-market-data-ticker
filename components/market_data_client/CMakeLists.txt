@@ -5,6 +5,7 @@ idf_component_register(
         "src/market_data_json_scanner.c"
         "src/market_data_klines_parser.c"
         "src/market_data_symbol_parser.c"
+        "src/market_data_ticker_parser.c"
         "src/market_data_url.c"
     INCLUDE_DIRS
         "include"

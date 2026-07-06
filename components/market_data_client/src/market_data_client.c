@@ -7,6 +7,7 @@
 #include "market_data_http.h"
 #include "market_data_klines_parser.h"
 #include "market_data_symbol_parser.h"
+#include "market_data_ticker_parser.h"
 #include "market_data_url.h"
 #include "settings_store.h"
 #include "time_sync.h"
@@ -61,6 +62,11 @@ static market_data_err_t klines_sink(void *ctx, const char *chunk, size_t len)
     return market_data_klines_parser_feed((market_data_klines_parser_t *)ctx, chunk, len);
 }
 
+static market_data_err_t ticker_sink(void *ctx, const char *chunk, size_t len)
+{
+    return market_data_ticker_parser_feed((market_data_ticker_parser_t *)ctx, chunk, len);
+}
+
 market_data_err_t market_data_client_fetch_symbol_status(const char *symbol, market_data_symbol_status_t *out_status)
 {
     if (symbol == NULL || out_status == NULL)
@@ -110,6 +116,58 @@ market_data_err_t market_data_client_fetch_symbol_status(const char *symbol, mar
         return MARKET_DATA_ERR_SYMBOL_NOT_FOUND;
     }
     ESP_LOGW(TAG, "exchangeInfo request for '%s' failed: HTTP %d: %.*s", symbol, status, (int)body_len, body);
+    return status_to_generic_error(status);
+}
+
+market_data_err_t market_data_client_fetch_ticker_24hr(const char *symbol, market_data_ticker_24hr_t *out_ticker)
+{
+    if (symbol == NULL || out_ticker == NULL)
+    {
+        return MARKET_DATA_ERR_INVALID_ARG;
+    }
+    if (!time_sync_is_synced())
+    {
+        return MARKET_DATA_ERR_NOT_SYNCED;
+    }
+
+    char url[MARKET_DATA_URL_MAX];
+    market_data_err_t err = market_data_url_build_ticker_24hr(select_base_url(), symbol, url, sizeof(url));
+    if (err != MARKET_DATA_OK)
+    {
+        return err;
+    }
+
+    market_data_http_session_t *session = NULL;
+    int status = 0;
+    err = market_data_http_open(url, MARKET_DATA_HTTP_TIMEOUT_MS, &session, &status);
+    if (err != MARKET_DATA_OK)
+    {
+        return err;
+    }
+
+    if (status == 200)
+    {
+        market_data_ticker_parser_t parser;
+        market_data_ticker_parser_init(&parser, out_ticker);
+        err = market_data_http_stream_body(session, ticker_sink, &parser);
+        market_data_http_close(session);
+        if (err != MARKET_DATA_OK)
+        {
+            return err;
+        }
+        return market_data_ticker_parser_finish(&parser);
+    }
+
+    char body[MARKET_DATA_ERROR_BODY_MAX];
+    size_t body_len = 0;
+    (void)market_data_http_read_body_snippet(session, body, sizeof(body), &body_len);
+    market_data_http_close(session);
+
+    if (status == 400 && contains_binance_error_code(body, -1121))
+    {
+        return MARKET_DATA_ERR_SYMBOL_NOT_FOUND;
+    }
+    ESP_LOGW(TAG, "ticker/24hr request for '%s' failed: HTTP %d: %.*s", symbol, status, (int)body_len, body);
     return status_to_generic_error(status);
 }
 

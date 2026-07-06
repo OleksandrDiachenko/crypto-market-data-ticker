@@ -25,6 +25,10 @@ market_data_err_t market_data_url_build_exchange_info(const char *base_url, cons
 market_data_err_t market_data_url_build_klines(const char *base_url, const market_data_klines_request_t *req,
                                                 char *out, size_t out_capacity);
 
+// Writes "<base_url>/api/v3/ticker/24hr?symbol=<symbol>" into out.
+market_data_err_t market_data_url_build_ticker_24hr(const char *base_url, const char *symbol, char *out,
+                                                     size_t out_capacity);
+
 #ifdef __cplusplus
 }
 #endif
