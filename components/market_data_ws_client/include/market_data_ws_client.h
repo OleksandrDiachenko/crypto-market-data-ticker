@@ -36,13 +36,24 @@ extern "C" {
 esp_err_t market_data_ws_client_start(const char *const *symbols, uint8_t symbol_count);
 
 // Stops and destroys the underlying client and its queue. Not currently
-// called anywhere (no runtime watchlist-edit UI exists yet) - exposed for
-// symmetry and future use.
+// called anywhere - exposed for symmetry and future use.
 void market_data_ws_client_stop(void);
 
 // Sole consumer: components/app_state/src/app_state_ws_task.c. Returns NULL
 // if market_data_ws_client_start() was never called (or failed).
 QueueHandle_t market_data_ws_client_get_update_queue(void);
+
+// Adds/removes one `${symbol}@kline_1s` stream to/from the already-open
+// combined-stream connection via Binance's SUBSCRIBE/UNSUBSCRIBE control
+// frame (esp_websocket_client_send_text()), without reconnecting - see
+// docs/decisions/0007-watchlist-management.md. Returns
+// ESP_ERR_INVALID_STATE if market_data_ws_client_start() hasn't succeeded
+// yet, ESP_ERR_INVALID_ARG for a malformed symbol. Fire-and-forget like the
+// rest of this module's soft-dependency treatment of the WS link - a send
+// failure is logged, not retried here (esp_websocket_client's own
+// reconnect will re-establish the base connection if it was actually down).
+esp_err_t market_data_ws_client_subscribe(const char *symbol);
+esp_err_t market_data_ws_client_unsubscribe(const char *symbol);
 
 #ifdef __cplusplus
 }

@@ -11,7 +11,8 @@ SCANNER_SOURCES = $(MDC_SRC_DIR)/market_data_json_scanner.c
 
 TEST_NAMES = \
 	test_market_data_ws_url \
-	test_market_data_ws_stream_parser
+	test_market_data_ws_stream_parser \
+	test_market_data_ws_control
 
 TESTS = $(addprefix $(BUILD_DIR)/,$(TEST_NAMES))
 
@@ -28,6 +29,9 @@ $(BUILD_DIR)/test_market_data_ws_url: test_market_data_ws_url.c $(SRC_DIR)/marke
 
 $(BUILD_DIR)/test_market_data_ws_stream_parser: test_market_data_ws_stream_parser.c $(SRC_DIR)/market_data_ws_stream_parser.c $(SCANNER_SOURCES) test_common.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ test_market_data_ws_stream_parser.c $(SRC_DIR)/market_data_ws_stream_parser.c $(SCANNER_SOURCES)
+
+$(BUILD_DIR)/test_market_data_ws_control: test_market_data_ws_control.c $(SRC_DIR)/market_data_ws_control.c test_common.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ test_market_data_ws_control.c $(SRC_DIR)/market_data_ws_control.c
 
 clean:
 	rm -rf $(BUILD_DIR)

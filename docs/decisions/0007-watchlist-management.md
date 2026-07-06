@@ -65,6 +65,14 @@ boundary the same as everywhere else in this codebase (callers persist,
 
 ### 3. The live WebSocket stream does *not* pick up an added symbol until reboot
 
+> **Superseded by [0008](0008-watchlist-live-resubscribe.md).** The claim
+> below that REST sync "picks up any symbol in the table on its next sweep
+> regardless of when it was added" was incorrect - `app_state_sync_task`
+> had the same frozen-count bug as the WS task, so newly-added symbols got
+> neither REST syncs nor live ticks until a reboot. 0008 fixes the REST
+> bug and adds live SUBSCRIBE/UNSUBSCRIBE control frames so both now work
+> without a reboot. Left as-is below for history.
+
 [0004](0004-websocket-streaming.md) builds `app_state_ws_task`'s combined
 `@kline_1s` stream URL once, from whatever the watchlist was when
 `app_state_ws_task_start()` ran at boot, deliberately sequenced after

@@ -26,11 +26,39 @@ static SemaphoreHandle_t s_lock;
 static symbol_slot_t s_symbols[APP_STATE_MAX_SYMBOLS];
 static uint8_t s_symbol_count;
 static app_state_ota_info_t s_ota_info;
+static QueueHandle_t s_watchlist_event_queue;
+
+static void push_watchlist_event(app_state_watchlist_event_kind_t kind, const char *symbol)
+{
+    if (s_watchlist_event_queue == NULL)
+    {
+        return;
+    }
+    app_state_watchlist_event_t evt = {.kind = kind};
+    strncpy(evt.symbol, symbol, SETTINGS_SYMBOL_MAX_LEN);
+    evt.symbol[SETTINGS_SYMBOL_MAX_LEN] = '\0';
+    if (xQueueSend(s_watchlist_event_queue, &evt, 0) != pdTRUE)
+    {
+        ESP_LOGW(TAG, "Watchlist event queue full; dropping event for '%s'", symbol);
+    }
+}
+
+QueueHandle_t app_state_get_watchlist_event_queue(void)
+{
+    return s_watchlist_event_queue;
+}
 
 esp_err_t app_state_init(void)
 {
     s_lock = xSemaphoreCreateMutex();
     if (s_lock == NULL)
+    {
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_watchlist_event_queue =
+        xQueueCreate(APP_STATE_WATCHLIST_EVENT_QUEUE_LEN, sizeof(app_state_watchlist_event_t));
+    if (s_watchlist_event_queue == NULL)
     {
         return ESP_ERR_NO_MEM;
     }
@@ -144,6 +172,7 @@ esp_err_t app_state_add_symbol(const char *ticker)
     xSemaphoreGive(s_lock);
 
     ESP_LOGI(TAG, "Added watchlist symbol '%s' (%u total)", slot->symbol, (unsigned)s_symbol_count);
+    push_watchlist_event(APP_STATE_WATCHLIST_SYMBOL_ADDED, ticker);
     return ESP_OK;
 }
 
@@ -172,6 +201,7 @@ esp_err_t app_state_remove_symbol(uint8_t index)
 
     heap_caps_free(klines_to_free); // freeing PSRAM doesn't need the lock held
     ESP_LOGI(TAG, "Removed watchlist symbol '%s' (%u remaining)", removed_symbol, (unsigned)s_symbol_count);
+    push_watchlist_event(APP_STATE_WATCHLIST_SYMBOL_REMOVED, removed_symbol);
     return ESP_OK;
 }
 

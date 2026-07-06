@@ -5,6 +5,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "esp_websocket_client.h"
+#include "market_data_ws_control.h"
 #include "market_data_ws_stream_parser.h"
 #include "market_data_ws_url.h"
 #include "settings_store.h"
@@ -12,11 +13,42 @@
 #define WS_URL_MAX 512
 #define WS_STREAM_SUFFIX "kline_1s"
 #define WS_BUFFER_SIZE 2048 // combined-stream kline events are ~300-400 bytes; generous headroom
+#define WS_CONTROL_MSG_MAX 128
+#define WS_SEND_TIMEOUT_MS 2000
 
 static const char *TAG = "market_data_ws_client";
 
 static esp_websocket_client_handle_t s_client;
 static QueueHandle_t s_update_queue;
+
+// Binance echoes each control frame's "id" back in its response; this
+// module doesn't correlate responses (fire-and-forget, see the header doc
+// comment), so the id only needs to be distinct per send, not tracked.
+static uint32_t s_next_control_id = 1;
+
+static esp_err_t send_control_message(const char *method, const char *symbol)
+{
+    if (s_client == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char msg[WS_CONTROL_MSG_MAX];
+    if (market_data_ws_build_control_message(method, symbol, WS_STREAM_SUFFIX, s_next_control_id++, msg,
+                                              sizeof(msg)) != MARKET_DATA_OK)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    int written = esp_websocket_client_send_text(s_client, msg, (int)strlen(msg),
+                                                  pdMS_TO_TICKS(WS_SEND_TIMEOUT_MS));
+    if (written < 0)
+    {
+        ESP_LOGW(TAG, "Failed to send %s control frame for '%s'", method, symbol);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
 
 // Single connection, single event-handler task calling us serially - one
 // in-flight message's parser state at a time is all that's needed.
@@ -154,4 +186,14 @@ void market_data_ws_client_stop(void)
 QueueHandle_t market_data_ws_client_get_update_queue(void)
 {
     return s_update_queue;
+}
+
+esp_err_t market_data_ws_client_subscribe(const char *symbol)
+{
+    return send_control_message("SUBSCRIBE", symbol);
+}
+
+esp_err_t market_data_ws_client_unsubscribe(const char *symbol)
+{
+    return send_control_message("UNSUBSCRIBE", symbol);
 }

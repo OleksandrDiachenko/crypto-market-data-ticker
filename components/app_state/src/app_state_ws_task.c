@@ -17,8 +17,14 @@
 
 static const char *TAG = "app_state_ws";
 
-static int find_index_by_symbol(uint8_t count, const char *symbol)
+// Looks up against the *current* app_state_symbol_count(), not a count
+// snapshotted at task start - a symbol added at runtime is appended past
+// whatever count was frozen at boot, so a stale bound here would silently
+// drop its live ticks even after market_data_ws_client_subscribe() picks it
+// up on the wire.
+static int find_index_by_symbol(const char *symbol)
 {
+    uint8_t count = app_state_symbol_count();
     for (uint8_t i = 0; i < count; i++)
     {
         app_state_symbol_meta_t meta;
@@ -83,20 +89,65 @@ static void ws_task_fn(void *arg)
         return;
     }
 
+    // Also sole consumer of this one - see its own doc comment. A queue
+    // set lets this task block on whichever of the two fires first instead
+    // of picking one to poll and the other to block on.
+    QueueHandle_t watchlist_events = app_state_get_watchlist_event_queue();
+    QueueSetHandle_t queue_set = xQueueCreateSet(MARKET_DATA_WS_UPDATE_QUEUE_LEN + APP_STATE_WATCHLIST_EVENT_QUEUE_LEN);
+    if (queue_set != NULL && watchlist_events != NULL)
+    {
+        xQueueAddToSet(updates, queue_set);
+        xQueueAddToSet(watchlist_events, queue_set);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Queue set unavailable; watchlist edits won't live-resubscribe until reboot");
+        queue_set = NULL;
+    }
+
     market_data_kline_update_t update;
+    app_state_watchlist_event_t watchlist_event;
     for (;;)
     {
-        // Blocking (unlike app_state_sync_task's non-blocking drain): there
-        // is nothing else for this task to do, and live updates are
-        // latency-sensitive.
-        if (xQueueReceive(updates, &update, portMAX_DELAY) != pdTRUE)
+        if (queue_set == NULL)
         {
+            // Fallback: behave exactly as before this feature existed.
+            if (xQueueReceive(updates, &update, portMAX_DELAY) == pdTRUE)
+            {
+                int idx = find_index_by_symbol(update.symbol);
+                if (idx >= 0)
+                {
+                    app_state_apply_kline_update((uint8_t)idx, &update, WS_KLINE_INTERVAL_MS);
+                }
+            }
             continue;
         }
-        int idx = find_index_by_symbol(count, update.symbol);
-        if (idx >= 0)
+
+        QueueSetMemberHandle_t activated = xQueueSelectFromSet(queue_set, portMAX_DELAY);
+        if (activated == updates)
         {
-            app_state_apply_kline_update((uint8_t)idx, &update, WS_KLINE_INTERVAL_MS);
+            if (xQueueReceive(updates, &update, 0) == pdTRUE)
+            {
+                int idx = find_index_by_symbol(update.symbol);
+                if (idx >= 0)
+                {
+                    app_state_apply_kline_update((uint8_t)idx, &update, WS_KLINE_INTERVAL_MS);
+                }
+            }
+        }
+        else if (activated == watchlist_events)
+        {
+            if (xQueueReceive(watchlist_events, &watchlist_event, 0) == pdTRUE)
+            {
+                if (watchlist_event.kind == APP_STATE_WATCHLIST_SYMBOL_ADDED)
+                {
+                    market_data_ws_client_subscribe(watchlist_event.symbol);
+                }
+                else
+                {
+                    market_data_ws_client_unsubscribe(watchlist_event.symbol);
+                }
+            }
         }
     }
 }

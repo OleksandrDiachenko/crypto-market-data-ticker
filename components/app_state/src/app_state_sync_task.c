@@ -184,9 +184,13 @@ static void sync_task_fn(void *arg)
 {
     (void)arg;
 
-    uint8_t count = app_state_symbol_count();
+    // Sized for APP_STATE_MAX_SYMBOLS (not the boot-time watchlist size) so
+    // a symbol added at runtime always has a scratch slot ready - see
+    // docs/decisions/0007-watchlist-management.md's PSRAM budget note
+    // (~25KB/slot against this board's 32MB PSRAM, negligible even at the
+    // full 10-slot allocation).
     static market_data_kline_t *scratch[APP_STATE_MAX_SYMBOLS];
-    for (uint8_t i = 0; i < count; i++)
+    for (uint8_t i = 0; i < APP_STATE_MAX_SYMBOLS; i++)
     {
         // Separate from app_state's own PSRAM storage: app_state only
         // exposes mutex-guarded copy accessors, not a raw writable
@@ -218,7 +222,10 @@ static void sync_task_fn(void *arg)
             }
         }
 
-        run_due_fetches(count, scratch);
+        // Re-read every cycle - the watchlist can grow at runtime via
+        // app_state_add_symbol(), and a stale count here was the actual
+        // cause of newly-added symbols never leaving APP_STATE_SYMBOL_INIT.
+        run_due_fetches(app_state_symbol_count(), scratch);
 
         vTaskDelay(pdMS_TO_TICKS(SYNC_LOOP_INTERVAL_MS));
     }

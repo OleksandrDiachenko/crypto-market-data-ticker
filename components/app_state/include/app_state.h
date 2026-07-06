@@ -18,6 +18,8 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "market_data_client.h"
 #include "market_data_kline_update.h"
 #include "settings_codec.h"
@@ -67,9 +69,11 @@ esp_err_t app_state_get_symbol_klines(uint8_t index, market_data_kline_t *out_kl
 // Runtime-only: the caller is responsible for also persisting the change via
 // settings_store_save_symbols() - app_state doesn't call back into
 // settings_store itself. New symbols start at APP_STATE_SYMBOL_INIT and get
-// real data on app_state_sync_task's next sweep; see
-// docs/decisions/0007-watchlist-management.md for why the live WebSocket
-// stream doesn't pick them up until the next reboot.
+// real data on app_state_sync_task's next sweep (it re-reads
+// app_state_symbol_count() every cycle, so this is not gated on a reboot).
+// app_state_ws_task also reacts live to the watchlist-event queue below to
+// subscribe/unsubscribe the WebSocket stream without a reboot - see
+// docs/decisions/0007-watchlist-management.md.
 
 // Appends ticker as a new watchlist slot (allocating its PSRAM klines
 // buffer). Fails with ESP_ERR_NO_MEM if the watchlist is already at
@@ -81,6 +85,31 @@ esp_err_t app_state_add_symbol(const char *ticker);
 // PSRAM klines buffer and shifting later entries down - the table has no
 // gaps.
 esp_err_t app_state_remove_symbol(uint8_t index);
+
+// --- watchlist-change notifications (sole consumer: app_state_ws_task) ---
+
+typedef enum
+{
+    APP_STATE_WATCHLIST_SYMBOL_ADDED,
+    APP_STATE_WATCHLIST_SYMBOL_REMOVED,
+} app_state_watchlist_event_kind_t;
+
+typedef struct
+{
+    app_state_watchlist_event_kind_t kind;
+    char symbol[SETTINGS_SYMBOL_MAX_LEN + 1];
+} app_state_watchlist_event_t;
+
+// Depth sized for a person tapping add/remove far faster than any consumer
+// could actually be starved - generous headroom, not a tight fit (mirrors
+// MARKET_DATA_WS_UPDATE_QUEUE_LEN's own reasoning).
+#define APP_STATE_WATCHLIST_EVENT_QUEUE_LEN 8
+
+// Pushed by app_state_add_symbol()/app_state_remove_symbol() after the
+// mutation is committed. Point-to-point, not broadcast - see
+// market_data_ws_client_get_update_queue()'s doc comment for why only one
+// task may drain this.
+QueueHandle_t app_state_get_watchlist_event_queue(void);
 
 // --- writer API (app_state_sync_task only) ---
 

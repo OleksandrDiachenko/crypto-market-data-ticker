@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "src/market_data_ws_client.c"
+        "src/market_data_ws_control.c"
         "src/market_data_ws_stream_parser.c"
         "src/market_data_ws_url.c"
     INCLUDE_DIRS
