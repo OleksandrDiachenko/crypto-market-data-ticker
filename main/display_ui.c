@@ -93,12 +93,47 @@ static lv_obj_t *s_locale_screen;
 // Locale screen saves changes.
 static locale_settings_t s_locale;
 
+// Composed/sorted view of one network for display: the connected network
+// first, then every saved profile (in scan range or not), then whatever's
+// left from the scan - see build_wifi_display_rows(). Kept separate from
+// wifi_manager_ap_t since a saved-but-out-of-range profile has no scan
+// data (rssi/secured) to point to.
+typedef struct
+{
+    char ssid[WIFI_MANAGER_SSID_MAX + 1];
+    int8_t rssi;
+    bool has_rssi; // false for a saved network currently out of scan range
+    bool saved;
+    bool connected;
+    bool secured;
+} wifi_display_row_t;
+
+// Per-row click context - just the fields wifi_ap_click_cb() needs, so a
+// row's event callback stays valid independent of the display-row array's
+// own lifetime/comparison use.
+typedef struct
+{
+    char ssid[WIFI_MANAGER_SSID_MAX + 1];
+    bool saved;
+    bool connected;
+} wifi_row_click_ctx_t;
+
 static lv_obj_t *s_wifi_screen;
 static lv_obj_t *s_wifi_list;
-// Static (not stack-local) so completed rows' click handlers can safely
-// reference "their" wifi_manager_ap_t by pointer after the function that
-// built them returns - see build_wifi_ap_row()/wifi_ap_click_cb().
 static wifi_manager_snapshot_t s_wifi_snapshot;
+
+// Last set of rows actually rendered into s_wifi_list, so update_wifi_screen()
+// can skip the teardown/rebuild when nothing changed - see its definition for
+// why that matters (rebuilding on every tick could destroy a row mid-tap).
+#define WIFI_DISPLAY_ROWS_MAX (WIFI_MANAGER_MAX_SCAN_APS + WIFI_MANAGER_MAX_PROFILES)
+static wifi_display_row_t s_wifi_rendered_rows[WIFI_DISPLAY_ROWS_MAX];
+static uint8_t s_wifi_rendered_count;
+
+// Per-row click context, indexed the same as the row it was created for.
+// Static (not stack-local) so each row's click handler can safely reference
+// "its" ssid/saved/connected by pointer after the function that built the
+// row returns - see build_wifi_ap_row()/wifi_ap_click_cb().
+static wifi_row_click_ctx_t s_wifi_click_ctx[WIFI_DISPLAY_ROWS_MAX];
 
 static lv_obj_t *s_wifi_password_screen;
 static lv_obj_t *s_wifi_ssid_input;
@@ -690,6 +725,16 @@ static void style_dark_textarea(lv_obj_t *ta)
     lv_obj_set_style_border_side(ta, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
     lv_obj_set_style_border_width(ta, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
     lv_obj_set_style_border_color(ta, COLOR_MUTED, LV_PART_CURSOR | LV_STATE_FOCUSED); // matches the eye icon's color
+
+    // Without an explicit LV_STATE_DISABLED style, LVGL's base theme washes
+    // the field out to a light gray while a connect attempt is in flight
+    // (see wifi_password_set_inputs_enabled()) - keep the same bg/border and
+    // only mute the text color instead, matching how a read-only known-SSID
+    // field already looks (see wifi_password_screen_set_ssid()).
+    lv_obj_set_style_bg_color(ta, lv_color_hex(0x171B21), LV_STATE_DISABLED);
+    lv_obj_set_style_bg_opa(ta, LV_OPA_COVER, LV_STATE_DISABLED);
+    lv_obj_set_style_border_color(ta, lv_color_hex(0x2C3440), LV_STATE_DISABLED);
+    lv_obj_set_style_text_color(ta, COLOR_MUTED, LV_STATE_DISABLED);
 }
 
 static void style_dark_keyboard(lv_obj_t *kb)
@@ -1093,27 +1138,42 @@ static void wifi_keyboard_event_cb(lv_event_t *e)
 // All keyboard buttons use uniform styling (no per-button coloring).
 // style_dark_keyboard() provides the single look for the entire keyboard.
 
-// ap points into the static s_wifi_snapshot (see its declaration) - stable
-// as long as this row exists, which is only ever within the same tick that
-// filled it (update_wifi_screen() rebuilds every row on every refresh).
+// Wires the keyboard to `field` and focuses it immediately, instead of
+// waiting for the user to tap the field first (wifi_field_focus_cb() does
+// the same two calls on LV_EVENT_FOCUSED - this is that same behavior
+// applied up front, on screen entry, so the keyboard is never the first
+// thing missing from an otherwise-empty-looking screen).
+static void wifi_password_screen_focus_default_field(lv_obj_t *field)
+{
+    lv_obj_add_state(field, LV_STATE_FOCUSED);
+    lv_keyboard_set_textarea(s_wifi_password_keyboard, field);
+    lv_obj_remove_flag(s_wifi_password_keyboard, LV_OBJ_FLAG_HIDDEN);
+}
+
+// ctx points into the static s_wifi_click_ctx array (see its declaration),
+// not into wifi_manager_ap_t/s_wifi_snapshot - it stays valid across ticks
+// where update_wifi_screen() decides nothing changed and skips rebuilding,
+// which is what makes a tap on a saved network register reliably instead of
+// needing several attempts (see update_wifi_screen()'s comment).
 static void wifi_ap_click_cb(lv_event_t *e)
 {
-    const wifi_manager_ap_t *ap = (const wifi_manager_ap_t *)lv_event_get_user_data(e);
-    if (ap->connected)
+    const wifi_row_click_ctx_t *ctx = (const wifi_row_click_ctx_t *)lv_event_get_user_data(e);
+    if (ctx->connected)
     {
         return; // already active
     }
-    if (ap->saved)
+    if (ctx->saved)
     {
-        wifi_manager_connect_saved(ap->ssid);
+        wifi_manager_connect_saved(ctx->ssid);
         return;
     }
 
-    strncpy(s_wifi_pending_ssid, ap->ssid, WIFI_MANAGER_SSID_MAX);
+    strncpy(s_wifi_pending_ssid, ctx->ssid, WIFI_MANAGER_SSID_MAX);
     s_wifi_pending_ssid[WIFI_MANAGER_SSID_MAX] = '\0';
     lv_textarea_set_text(s_wifi_password_input, "");
     wifi_password_screen_set_ssid(s_wifi_pending_ssid, true);
     show_settings_view(SETTINGS_VIEW_WIFI_PASSWORD);
+    wifi_password_screen_focus_default_field(s_wifi_password_input); // SSID is fixed/known - password is the only thing left to type
 }
 
 // Entry point for the "Add network" row (build_wifi_add_network_row()) -
@@ -1126,6 +1186,7 @@ static void wifi_add_network_click_cb(lv_event_t *e)
     lv_textarea_set_text(s_wifi_password_input, "");
     wifi_password_screen_set_ssid("", false);
     show_settings_view(SETTINGS_VIEW_WIFI_PASSWORD);
+    wifi_password_screen_focus_default_field(s_wifi_ssid_input); // SSID is empty here - fill it in first
 }
 
 // RSSI (dBm, typically -30..-90; higher/less negative is stronger) mapped to
@@ -1155,17 +1216,17 @@ static lv_obj_t *build_signal_icon(lv_obj_t *parent, uint8_t bars, bool active)
     lv_obj_t *box = lv_obj_create(parent);
     lv_obj_remove_style_all(box);
     make_plain_container(box);
-    lv_obj_set_size(box, 18, 14);
+    lv_obj_set_size(box, 24, 18);
     lv_obj_set_flex_flow(box, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(box, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
 
-    static const uint8_t heights[4] = {4, 7, 10, 13};
+    static const uint8_t heights[4] = {5, 9, 13, 17};
     for (uint8_t i = 0; i < 4; i++)
     {
         lv_obj_t *bar = lv_obj_create(box);
         lv_obj_remove_style_all(bar);
         make_plain_container(bar);
-        lv_obj_set_size(bar, 3, heights[i]);
+        lv_obj_set_size(bar, 4, heights[i]);
         lv_obj_set_style_radius(bar, 1, 0);
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(bar, (i < bars) ? (active ? COLOR_ACCENT : COLOR_TEXT) : COLOR_HAIRLINE, 0);
@@ -1213,20 +1274,33 @@ static lv_obj_t *build_lock_icon(lv_obj_t *parent)
 }
 
 // Entry point into the "Add Network" flow (empty, editable SSID field) -
-// the "Add hidden network" affordance from the original mockup, previously
-// a known gap (see the dashboard-design skill's "Known, deliberate gaps").
+// the "Add hidden network" affordance from the original mockup. Styled as a
+// standalone bordered pill (mockup's .addbtn) below the scanned networks
+// rather than a plain list row, so it reads as a distinct action, not just
+// another AP entry. The mockup's border is dashed, but the vendored LVGL 9.5
+// (see lv_obj_style_gen.h) only exposes border color/opa/width/side/post -
+// no border-style/dashed property (dropped from LVGL 9) - so this uses a
+// solid border as the closest available approximation.
 static void build_wifi_add_network_row(lv_obj_t *parent)
 {
+    // Explicit width instead of LV_PCT(100), since the row also carries its
+    // own left/right margin (mockup: margin: 12px 18px) - LV_PCT is measured
+    // against the parent's content box, so combining it with margin would
+    // overflow the list by 2x the margin.
+    const int32_t addbtn_width_px = BOARD_JC4880P443C_LCD_H_RES - 2 * 18;
+
     lv_obj_t *row = lv_obj_create(parent);
     lv_obj_remove_style_all(row);
     make_plain_container(row);
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_size(row, LV_PCT(100), 60);
+    lv_obj_set_size(row, addbtn_width_px, 46);
+    lv_obj_set_style_margin_left(row, 18, 0);
+    lv_obj_set_style_margin_top(row, 12, 0);
+    lv_obj_set_style_margin_bottom(row, 12, 0);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_left(row, 20, 0);
-    lv_obj_set_style_pad_column(row, 12, 0);
-    lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 8, 0);
+    lv_obj_set_style_radius(row, 10, 0);
     lv_obj_set_style_border_width(row, 1, 0);
     lv_obj_set_style_border_color(row, COLOR_HAIRLINE, 0);
     lv_obj_add_event_cb(row, wifi_add_network_click_cb, LV_EVENT_CLICKED, NULL);
@@ -1242,51 +1316,66 @@ static void build_wifi_add_network_row(lv_obj_t *parent)
     lv_label_set_text(label, "Add network");
 }
 
-static void build_wifi_ap_row(const wifi_manager_ap_t *ap)
+// Row order matches the mockup's .net-row: signal icon on the left, an
+// SSID/status column (SSID on top, status text below it) taking the
+// remaining width, and the lock icon (secured networks only) pinned to the
+// right edge - not [ssid] ... [signal, status, lock] all clustered together.
+// `index` selects this row's slot in s_wifi_click_ctx - see that array's
+// declaration and wifi_ap_click_cb().
+static void build_wifi_ap_row(const wifi_display_row_t *disp_row, uint8_t index)
 {
     lv_obj_t *row = lv_obj_create(s_wifi_list);
     lv_obj_remove_style_all(row);
     make_plain_container(row);
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_size(row, LV_PCT(100), 60);
+    lv_obj_set_size(row, LV_PCT(100), 66);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_left(row, 20, 0);
     lv_obj_set_style_pad_right(row, 20, 0);
+    lv_obj_set_style_pad_column(row, 14, 0);
     lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_set_style_border_width(row, 1, 0);
     lv_obj_set_style_border_color(row, COLOR_HAIRLINE, 0);
-    lv_obj_add_event_cb(row, wifi_ap_click_cb, LV_EVENT_CLICKED, (void *)ap);
 
-    lv_obj_t *ssid_label = lv_label_create(row);
+    wifi_row_click_ctx_t *ctx = &s_wifi_click_ctx[index];
+    strncpy(ctx->ssid, disp_row->ssid, WIFI_MANAGER_SSID_MAX);
+    ctx->ssid[WIFI_MANAGER_SSID_MAX] = '\0';
+    ctx->saved = disp_row->saved;
+    ctx->connected = disp_row->connected;
+    lv_obj_add_event_cb(row, wifi_ap_click_cb, LV_EVENT_CLICKED, ctx);
+
+    build_signal_icon(row, disp_row->has_rssi ? wifi_rssi_to_bars(disp_row->rssi) : 0, disp_row->connected);
+
+    lv_obj_t *info = lv_obj_create(row);
+    lv_obj_remove_style_all(info);
+    make_plain_container(info);
+    lv_obj_set_size(info, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(info, 1);
+    lv_obj_set_flex_flow(info, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(info, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    lv_obj_t *ssid_label = lv_label_create(info);
     lv_obj_set_style_text_color(ssid_label, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(ssid_label, &lv_font_montserrat_16, 0);
-    lv_label_set_text(ssid_label, ap->ssid);
+    lv_label_set_text(ssid_label, disp_row->ssid);
 
-    // Groups the signal/lock icons with the status text so the outer row's
-    // two-slot space-between layout (ssid on the left, this on the right)
-    // doesn't need to change.
-    lv_obj_t *right_group = lv_obj_create(row);
-    lv_obj_remove_style_all(right_group);
-    make_plain_container(right_group);
-    lv_obj_set_size(right_group, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(right_group, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(right_group, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(right_group, 10, 0);
-
-    build_signal_icon(right_group, wifi_rssi_to_bars(ap->rssi), ap->connected);
-
-    lv_obj_t *status_label = lv_label_create(right_group);
-    lv_obj_set_style_text_font(status_label, &lv_font_montserrat_14, 0);
-    if (ap->connected)
+    lv_obj_t *status_label = lv_label_create(info);
+    lv_obj_set_style_text_font(status_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_pad_top(status_label, 2, 0);
+    if (disp_row->connected)
     {
         lv_obj_set_style_text_color(status_label, COLOR_UP, 0);
         lv_label_set_text(status_label, "Connected");
     }
-    else if (ap->saved)
+    else if (disp_row->saved)
     {
         lv_obj_set_style_text_color(status_label, COLOR_MUTED, 0);
-        lv_label_set_text(status_label, "Saved");
+        // Plain ASCII separator - the vendored Montserrat fonts here only
+        // cover CONFIG_LV_FONT_MONTSERRAT's default (Latin/ASCII) range, so a
+        // middle-dot ("\xC2\xB7", used elsewhere in the reviewed mockup)
+        // renders as a missing-glyph box.
+        lv_label_set_text(status_label, disp_row->has_rssi ? "Saved" : "Saved - Not in range");
     }
     else
     {
@@ -1294,18 +1383,162 @@ static void build_wifi_ap_row(const wifi_manager_ap_t *ap)
         lv_label_set_text(status_label, "Tap to connect");
     }
 
-    if (ap->secured)
+    if (disp_row->secured)
     {
-        build_lock_icon(right_group);
+        build_lock_icon(row);
     }
 }
 
-// Rebuilds the whole AP list every call rather than diffing - simplest
-// correct option, and only runs while the Wi-Fi screen is actually visible
-// (see update_timer_cb()), so the cost is bounded to whenever the user is
-// looking at this screen. Connection status itself lives only in the
-// per-row "Connected"/"Saved"/"Tap to connect" text and the bottom status
-// bar - no separate status banner, matching the reviewed design.
+// wifi_manager_ap_t.connected is baked in at the *last completed scan* (see
+// wifi_policy_sort_scan()/handle_scan_done() in wifi_manager.c) - it isn't
+// re-derived on every snapshot read. So if the connection changes between
+// scans (e.g. disconnect from a saved network, fail to connect elsewhere,
+// end up offline), a stale scan can keep reporting the old network as
+// connected for up to WIFI_AUTO_RESCAN_TICKS seconds. snapshot.state and
+// snapshot.active_ssid, in contrast, ARE recomputed on every snapshot call
+// (update_snapshot_from_policy()) - use those instead of ap->connected so a
+// row's "Connected" label/accent, and wifi_ap_click_cb's "already active"
+// guard, can't get stuck pointing at a network that's no longer actually
+// active (which otherwise left that row silently unresponsive to taps).
+static bool wifi_ap_is_live_connected(const wifi_manager_snapshot_t *snap, const char *ssid)
+{
+    return snap->state == WIFI_MANAGER_STATE_CONNECTED && strcmp(snap->active_ssid, ssid) == 0;
+}
+
+// Builds the sorted view described at wifi_display_row_t's declaration:
+// connected network first, then every saved profile (in scan range or not),
+// then whatever else the scan turned up. Returns the row count written to
+// out_rows (capacity WIFI_DISPLAY_ROWS_MAX).
+static uint8_t build_wifi_display_rows(const wifi_manager_snapshot_t *snap, wifi_display_row_t *out_rows)
+{
+    uint8_t count = 0;
+    bool ap_consumed[WIFI_MANAGER_MAX_SCAN_APS] = {0};
+    bool connected_added = false;
+
+    // 1) The connected network, if the latest scan pass still sees it.
+    for (uint8_t i = 0; i < snap->ap_count; i++)
+    {
+        if (!wifi_ap_is_live_connected(snap, snap->aps[i].ssid))
+        {
+            continue;
+        }
+        const wifi_manager_ap_t *ap = &snap->aps[i];
+        strncpy(out_rows[count].ssid, ap->ssid, WIFI_MANAGER_SSID_MAX);
+        out_rows[count].ssid[WIFI_MANAGER_SSID_MAX] = '\0';
+        out_rows[count].rssi = ap->rssi;
+        out_rows[count].has_rssi = true;
+        out_rows[count].saved = ap->saved;
+        out_rows[count].connected = true;
+        out_rows[count].secured = ap->secured;
+        count++;
+        ap_consumed[i] = true;
+        connected_added = true;
+        break; // at most one active connection
+    }
+
+    // 1b) Edge case: wifi_manager considers a profile connected but the most
+    // recent scan pass didn't include it (e.g. scan hasn't refreshed since
+    // connecting) - still surface it at the top rather than dropping it.
+    if (!connected_added)
+    {
+        for (uint8_t k = 0; k < snap->profile_count; k++)
+        {
+            if (!snap->known[k].connected)
+            {
+                continue;
+            }
+            strncpy(out_rows[count].ssid, snap->known[k].ssid, WIFI_MANAGER_SSID_MAX);
+            out_rows[count].ssid[WIFI_MANAGER_SSID_MAX] = '\0';
+            out_rows[count].rssi = 0;
+            out_rows[count].has_rssi = false;
+            out_rows[count].saved = true;
+            out_rows[count].connected = true;
+            out_rows[count].secured = true; // unknown here - see the (3) comment below
+            count++;
+            connected_added = true;
+            break;
+        }
+    }
+
+    // 2) Remaining saved networks currently in scan range.
+    for (uint8_t i = 0; i < snap->ap_count; i++)
+    {
+        if (ap_consumed[i] || !snap->aps[i].saved)
+        {
+            continue;
+        }
+        const wifi_manager_ap_t *ap = &snap->aps[i];
+        strncpy(out_rows[count].ssid, ap->ssid, WIFI_MANAGER_SSID_MAX);
+        out_rows[count].ssid[WIFI_MANAGER_SSID_MAX] = '\0';
+        out_rows[count].rssi = ap->rssi;
+        out_rows[count].has_rssi = true;
+        out_rows[count].saved = true;
+        out_rows[count].connected = false;
+        out_rows[count].secured = ap->secured;
+        count++;
+        ap_consumed[i] = true;
+    }
+
+    // 3) Saved profiles the current scan doesn't see at all - kept listed
+    // (per request: known networks stay visible even out of range) with no
+    // signal bars lit instead of being dropped. wifi_manager_known_t has no
+    // security-mode field, so `secured` defaults to true here - nearly all
+    // saved home/office networks are secured, and showing a lock on the rare
+    // open one is a smaller error than the reverse.
+    for (uint8_t k = 0; k < snap->profile_count && count < WIFI_DISPLAY_ROWS_MAX; k++)
+    {
+        const wifi_manager_known_t *known = &snap->known[k];
+        bool already_listed = false;
+        for (uint8_t j = 0; j < count; j++)
+        {
+            if (strcmp(out_rows[j].ssid, known->ssid) == 0)
+            {
+                already_listed = true;
+                break;
+            }
+        }
+        if (already_listed)
+        {
+            continue;
+        }
+        strncpy(out_rows[count].ssid, known->ssid, WIFI_MANAGER_SSID_MAX);
+        out_rows[count].ssid[WIFI_MANAGER_SSID_MAX] = '\0';
+        out_rows[count].rssi = 0;
+        out_rows[count].has_rssi = false;
+        out_rows[count].saved = true;
+        out_rows[count].connected = false;
+        out_rows[count].secured = true;
+        count++;
+    }
+
+    // 4) Everything else the scan turned up - not saved, not connected.
+    for (uint8_t i = 0; i < snap->ap_count && count < WIFI_DISPLAY_ROWS_MAX; i++)
+    {
+        if (ap_consumed[i])
+        {
+            continue;
+        }
+        const wifi_manager_ap_t *ap = &snap->aps[i];
+        strncpy(out_rows[count].ssid, ap->ssid, WIFI_MANAGER_SSID_MAX);
+        out_rows[count].ssid[WIFI_MANAGER_SSID_MAX] = '\0';
+        out_rows[count].rssi = ap->rssi;
+        out_rows[count].has_rssi = true;
+        out_rows[count].saved = false;
+        out_rows[count].connected = false;
+        out_rows[count].secured = ap->secured;
+        count++;
+    }
+
+    return count;
+}
+
+// Rebuilds s_wifi_list only when build_wifi_display_rows() produces a
+// different result than last time (see s_wifi_rendered_rows/_count) rather
+// than unconditionally on every ~1s tick. Tearing the whole list down and
+// recreating it regardless of whether anything changed meant a tap landing
+// mid-rebuild (press registered on a row that gets lv_obj_clean()'d before
+// its release fires) was silently dropped - the user had to keep tapping a
+// saved network until one attempt happened to land between rebuilds.
 #define WIFI_AUTO_RESCAN_TICKS 7 // ~7s between automatic background rescans
 
 static void update_wifi_screen(void)
@@ -1322,20 +1555,40 @@ static void update_wifi_screen(void)
         return;
     }
 
+    wifi_display_row_t new_rows[WIFI_DISPLAY_ROWS_MAX];
+    memset(new_rows, 0, sizeof(new_rows)); // zero padding too, so the memcmp below is reliable
+    uint8_t new_count = build_wifi_display_rows(&s_wifi_snapshot, new_rows);
+
+    // s_wifi_list starts out with no children at all (build_wifi_screen()
+    // creates it empty), so an all-zero new_count on the very first tick
+    // would otherwise compare equal to the equally-empty initial cache and
+    // skip building anything - not even the "Scanning..."/add-network
+    // placeholder. s_wifi_list_built forces the first pass through.
+    static bool s_wifi_list_built;
+    if (s_wifi_list_built && new_count == s_wifi_rendered_count &&
+        memcmp(new_rows, s_wifi_rendered_rows, (size_t)new_count * sizeof(new_rows[0])) == 0)
+    {
+        return; // nothing changed - leave the existing rows (and any in-progress tap) alone
+    }
+    memcpy(s_wifi_rendered_rows, new_rows, (size_t)new_count * sizeof(new_rows[0]));
+    s_wifi_rendered_count = new_count;
+    s_wifi_list_built = true;
+
     lv_obj_clean(s_wifi_list);
-    build_wifi_add_network_row(s_wifi_list);
-    if (s_wifi_snapshot.ap_count == 0)
+    if (new_count == 0)
     {
         lv_obj_t *empty = lv_label_create(s_wifi_list);
         lv_obj_set_style_text_color(empty, COLOR_MUTED, 0);
         lv_obj_set_style_pad_top(empty, 16, 0);
         lv_label_set_text(empty, "Scanning...");
+        build_wifi_add_network_row(s_wifi_list);
         return;
     }
-    for (uint8_t i = 0; i < s_wifi_snapshot.ap_count; i++)
+    for (uint8_t i = 0; i < new_count; i++)
     {
-        build_wifi_ap_row(&s_wifi_snapshot.aps[i]);
+        build_wifi_ap_row(&new_rows[i], i);
     }
+    build_wifi_add_network_row(s_wifi_list);
 }
 
 static void wifi_row_click_cb(lv_event_t *e)
