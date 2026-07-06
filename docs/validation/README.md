@@ -16,6 +16,8 @@ and runtime behavior on the real ESP32-P4 board.
 - [Market data client](market-data-client-hardware-test.md)
 - [app_state runtime model](app-state-runtime-hardware-test.md)
 - [WebSocket kline_1s streaming](websocket-streaming-hardware-test.md)
+- [OTA firmware update](ota-firmware-update-hardware-test.md)
+- [Serial console USB-Serial-JTAG rebind](serial-console-usb-jtag-rebind-hardware-test.md)
 
 ## Report Template
 

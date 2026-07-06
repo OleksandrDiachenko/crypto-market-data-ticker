@@ -39,6 +39,17 @@ CONFIG_CACHE_L2_CACHE_LINE_128B=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
 
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# The board's only host-reachable serial port (/dev/cu.usbmodem101) is
+# USB-Serial-JTAG, not UART0 - ESP-IDF's default primary console. With
+# UART0 as primary, log output reaches this port (mirrored via the
+# secondary console) but no REPL input ever does, since nothing reads
+# from it - confirmed by hardware test
+# (docs/validation/ota-firmware-update-hardware-test.md). Making
+# USB-Serial-JTAG the primary console instead makes the same port that
+# already carries logs/flashing also accept REPL input.
+# CONFIG_ESP_CONSOLE_UART_DEFAULT is not set
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=20

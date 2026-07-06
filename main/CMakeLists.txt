@@ -5,6 +5,7 @@ idf_component_register(
         "app_lifecycle.c"
         "display_ui.c"
         "ota_console.c"
+        "dev_screenshot_console.c"
     INCLUDE_DIRS
         "."
     REQUIRES
@@ -16,4 +17,5 @@ idf_component_register(
         nvs_flash
         console
         app_update
+        mbedtls
 )

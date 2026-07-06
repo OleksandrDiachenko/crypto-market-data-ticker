@@ -1,0 +1,20 @@
+menu "Development tools"
+
+    config DEV_SCREENSHOT_CONSOLE
+        bool "Enable 'screenshot' console command (dev-only, disable for release builds)"
+        default n
+        select LV_USE_SNAPSHOT
+        help
+            Registers a 'screenshot' command on the console REPL that
+            captures the current LVGL screen (lv_screen_active()) into a
+            PSRAM buffer and streams it back over the same serial port as
+            base64 text, for use by tools/dev_screenshot.py. Adds ~768 KB
+            of transient PSRAM usage per invocation and pulls in the LVGL
+            snapshot API.
+
+            Enable this only via 'idf.py menuconfig' in your local
+            sdkconfig (sdkconfig is gitignored). Never set this to y in
+            sdkconfig.defaults - it must stay off in production/release
+            builds.
+
+endmenu

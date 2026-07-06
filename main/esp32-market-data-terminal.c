@@ -4,6 +4,7 @@
 #include "app_state_ota_task.h"
 #include "app_state_sync_task.h"
 #include "app_state_ws_task.h"
+#include "dev_screenshot_console.h"
 #include "display_ui.h"
 #include "ota_console.h"
 #include "settings_store.h"
@@ -130,5 +131,13 @@ void app_main(void)
     if (ota_console_start() != ESP_OK)
     {
         ESP_LOGW(TAG, "OTA console failed to start; manual ota_check/ota_update commands unavailable");
+    }
+
+    // Dev-only "screenshot" console command (no-op unless
+    // CONFIG_DEV_SCREENSHOT_CONSOLE is enabled locally) - shares the same
+    // console REPL ota_console_start() just registered into.
+    if (dev_screenshot_console_register() != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Dev screenshot console command failed to register");
     }
 }
