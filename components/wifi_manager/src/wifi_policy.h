@@ -54,6 +54,7 @@ typedef enum
     WIFI_POLICY_IN_CMD_DISCONNECT,
     WIFI_POLICY_IN_CMD_FORGET,
     WIFI_POLICY_IN_CMD_UPDATE_PASSWORD,
+    WIFI_POLICY_IN_TEARDOWN_DISCONNECTED,
 } wifi_policy_input_kind_t;
 
 typedef struct
@@ -140,6 +141,11 @@ typedef struct
     char fallback_ssid[WIFI_POLICY_SSID_MAX + 1];
     bool fallback_pending;
 
+    // True while waiting for the old association's disconnect to be
+    // confirmed before starting the actual connect to current_ssid (see
+    // WIFI_POLICY_IN_CMD_CONNECT_NEW / _SAVED and IN_TEARDOWN_DISCONNECTED).
+    bool teardown_pending;
+
     wifi_policy_profile_t profiles[WIFI_POLICY_MAX_PROFILES];
     uint8_t profile_count;
     uint8_t order[WIFI_POLICY_MAX_PROFILES]; // indices into profiles[], last_success first
@@ -165,6 +171,7 @@ uint8_t wifi_policy_handle(wifi_policy_t *p, const wifi_policy_input_t *in, wifi
                             uint8_t max_out);
 
 wifi_policy_state_t wifi_policy_state(const wifi_policy_t *p);
+bool wifi_policy_is_teardown_pending(const wifi_policy_t *p);
 
 // Standalone pure helpers, independently host-tested.
 uint32_t wifi_policy_backoff_delay_ms(uint32_t base_ms, uint32_t max_ms, uint8_t attempt);

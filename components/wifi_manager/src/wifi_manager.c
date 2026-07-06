@@ -727,7 +727,18 @@ static void handle_cmd(const wifi_mgr_cmd_t *cmd)
     case CMD_WIFI_DISCONNECTED:
     {
         wifi_policy_state_t pstate = wifi_policy_state(&policy);
-        if (pstate == WIFI_POLICY_STATE_CONNECTING)
+        if (wifi_policy_is_teardown_pending(&policy))
+        {
+            // This disconnect is the (async) teardown of the previously
+            // active association, issued before the new connect attempt.
+            // Route it separately from CONNECT_FAIL so it starts the
+            // deferred connect instead of being mistaken for the new
+            // attempt itself failing.
+            stop_connect_timeout_timer();
+            wifi_policy_input_t in = {.kind = WIFI_POLICY_IN_TEARDOWN_DISCONNECTED};
+            feed_policy(&in);
+        }
+        else if (pstate == WIFI_POLICY_STATE_CONNECTING)
         {
             stop_connect_timeout_timer();
             wifi_policy_input_t in = {.kind = WIFI_POLICY_IN_CONNECT_FAIL,
@@ -784,6 +795,12 @@ static void handle_cmd(const wifi_mgr_cmd_t *cmd)
         wifi_policy_input_t in = {.kind = WIFI_POLICY_IN_CMD_CONNECT_NEW};
         strncpy(in.ssid, cmd->ssid, WIFI_POLICY_SSID_MAX);
         feed_policy(&in);
+        if (wifi_policy_is_teardown_pending(&policy))
+        {
+            // Safety net: if the old association's disconnect event never
+            // arrives, still time out instead of getting stuck CONNECTING.
+            start_connect_timeout_timer();
+        }
         break;
     }
 
@@ -792,6 +809,10 @@ static void handle_cmd(const wifi_mgr_cmd_t *cmd)
         wifi_policy_input_t in = {.kind = WIFI_POLICY_IN_CMD_CONNECT_SAVED};
         strncpy(in.ssid, cmd->ssid, WIFI_POLICY_SSID_MAX);
         feed_policy(&in);
+        if (wifi_policy_is_teardown_pending(&policy))
+        {
+            start_connect_timeout_timer();
+        }
         break;
     }
 

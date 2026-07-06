@@ -207,6 +207,8 @@ static uint8_t handle_terminal_failure(wifi_policy_t *p, wifi_policy_fail_class_
     wifi_policy_event_t fail_event =
         (fail_class == WIFI_POLICY_FAIL_AUTH) ? WIFI_POLICY_EVENT_AUTH_FAILED : WIFI_POLICY_EVENT_CONNECT_FAILED;
 
+    p->teardown_pending = false;
+
     if (p->current_origin == WIFI_POLICY_ORIGIN_MANUAL || p->current_origin == WIFI_POLICY_ORIGIN_FALLBACK)
     {
         n = emit(out, max_out, n, act_event(fail_event, p->current_ssid));
@@ -302,6 +304,7 @@ uint8_t wifi_policy_handle(wifi_policy_t *p, const wifi_policy_input_t *in, wifi
         copy_ssid(ssid, p->current_ssid);
         p->state = WIFI_POLICY_STATE_CONNECTED;
         p->current_attempt = 0;
+        p->teardown_pending = false;
         p->fallback_pending = false;
         p->fallback_ssid[0] = '\0';
 
@@ -396,7 +399,9 @@ uint8_t wifi_policy_handle(wifi_policy_t *p, const wifi_policy_input_t *in, wifi
     }
 
     case WIFI_POLICY_IN_CMD_CONNECT_NEW:
-        if (p->state == WIFI_POLICY_STATE_CONNECTED)
+    {
+        bool needs_teardown = (p->state == WIFI_POLICY_STATE_CONNECTED);
+        if (needs_teardown)
         {
             copy_ssid(p->fallback_ssid, p->current_ssid);
             p->fallback_pending = true;
@@ -410,9 +415,14 @@ uint8_t wifi_policy_handle(wifi_policy_t *p, const wifi_policy_input_t *in, wifi
         copy_ssid(p->current_ssid, in->ssid);
         p->current_attempt = 0;
         p->state = WIFI_POLICY_STATE_CONNECTING;
-        n = emit(out, max_out, n, act_connect(p->current_ssid, WIFI_POLICY_ORIGIN_MANUAL));
+        p->teardown_pending = needs_teardown;
+        if (!needs_teardown)
+        {
+            n = emit(out, max_out, n, act_connect(p->current_ssid, WIFI_POLICY_ORIGIN_MANUAL));
+        }
         n = emit(out, max_out, n, act_event(WIFI_POLICY_EVENT_CONNECTING, p->current_ssid));
         return n;
+    }
 
     case WIFI_POLICY_IN_CMD_CONNECT_SAVED:
         for (uint8_t i = 0; i < p->profile_count; i++)
@@ -428,18 +438,25 @@ uint8_t wifi_policy_handle(wifi_policy_t *p, const wifi_policy_input_t *in, wifi
                 break;
             }
         }
-        if (p->state == WIFI_POLICY_STATE_CONNECTED)
         {
-            n = emit(out, max_out, n, act_disconnect());
+            bool needs_teardown = (p->state == WIFI_POLICY_STATE_CONNECTED);
+            if (needs_teardown)
+            {
+                n = emit(out, max_out, n, act_disconnect());
+            }
+            p->fallback_pending = false;
+            p->current_origin = WIFI_POLICY_ORIGIN_MANUAL;
+            copy_ssid(p->current_ssid, in->ssid);
+            p->current_attempt = 0;
+            p->state = WIFI_POLICY_STATE_CONNECTING;
+            p->teardown_pending = needs_teardown;
+            if (!needs_teardown)
+            {
+                n = emit(out, max_out, n, act_connect(p->current_ssid, WIFI_POLICY_ORIGIN_MANUAL));
+            }
+            n = emit(out, max_out, n, act_event(WIFI_POLICY_EVENT_CONNECTING, p->current_ssid));
+            return n;
         }
-        p->fallback_pending = false;
-        p->current_origin = WIFI_POLICY_ORIGIN_MANUAL;
-        copy_ssid(p->current_ssid, in->ssid);
-        p->current_attempt = 0;
-        p->state = WIFI_POLICY_STATE_CONNECTING;
-        n = emit(out, max_out, n, act_connect(p->current_ssid, WIFI_POLICY_ORIGIN_MANUAL));
-        n = emit(out, max_out, n, act_event(WIFI_POLICY_EVENT_CONNECTING, p->current_ssid));
-        return n;
 
     case WIFI_POLICY_IN_CMD_DISCONNECT:
         if (p->state == WIFI_POLICY_STATE_CONNECTED || p->state == WIFI_POLICY_STATE_CONNECTING)
@@ -452,6 +469,7 @@ uint8_t wifi_policy_handle(wifi_policy_t *p, const wifi_policy_input_t *in, wifi
         p->current_ssid[0] = '\0';
         p->fallback_pending = false;
         p->pending_retry_kind = WIFI_POLICY_RETRY_NONE;
+        p->teardown_pending = false;
         return n;
 
     case WIFI_POLICY_IN_CMD_FORGET:
@@ -462,7 +480,17 @@ uint8_t wifi_policy_handle(wifi_policy_t *p, const wifi_policy_input_t *in, wifi
             p->state = WIFI_POLICY_STATE_READY;
             p->current_origin = WIFI_POLICY_ORIGIN_NONE;
             p->current_ssid[0] = '\0';
+            p->teardown_pending = false;
         }
+        return n;
+
+    case WIFI_POLICY_IN_TEARDOWN_DISCONNECTED:
+        if (!p->teardown_pending)
+        {
+            return 0;
+        }
+        p->teardown_pending = false;
+        n = emit(out, max_out, n, act_connect(p->current_ssid, p->current_origin));
         return n;
 
     case WIFI_POLICY_IN_CMD_UPDATE_PASSWORD:
@@ -489,6 +517,11 @@ uint8_t wifi_policy_handle(wifi_policy_t *p, const wifi_policy_input_t *in, wifi
 wifi_policy_state_t wifi_policy_state(const wifi_policy_t *p)
 {
     return p->state;
+}
+
+bool wifi_policy_is_teardown_pending(const wifi_policy_t *p)
+{
+    return p->teardown_pending;
 }
 
 uint32_t wifi_policy_backoff_delay_ms(uint32_t base_ms, uint32_t max_ms, uint8_t attempt)
