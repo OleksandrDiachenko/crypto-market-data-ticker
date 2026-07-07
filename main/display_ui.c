@@ -1277,6 +1277,18 @@ static void wifi_ap_click_cb(lv_event_t *e)
     wifi_password_screen_focus_default_field(s_wifi_password_input); // SSID is fixed/known - password is the only thing left to type
 }
 
+// Same ctx as wifi_ap_click_cb() (child button takes the tap before it
+// reaches the row's own click handler, same as watchlist_remove_click_cb()
+// vs. its row). No confirmation prompt - matches the watchlist remove
+// button's convention. update_wifi_screen() polls the snapshot every tick
+// and diffs it against what's rendered, so it picks up the profile removal
+// and rebuilds the row on its own; no explicit rebuild call needed here.
+static void wifi_forget_click_cb(lv_event_t *e)
+{
+    const wifi_row_click_ctx_t *ctx = (const wifi_row_click_ctx_t *)lv_event_get_user_data(e);
+    wifi_manager_forget(ctx->ssid);
+}
+
 // Entry point for the "Add network" row (build_wifi_add_network_row()) -
 // unlike wifi_ap_click_cb(), the SSID isn't known yet, so the field starts
 // empty and editable.
@@ -1419,8 +1431,9 @@ static void build_wifi_add_network_row(lv_obj_t *parent)
 
 // Row order matches the mockup's .net-row: signal icon on the left, an
 // SSID/status column (SSID on top, status text below it) taking the
-// remaining width, and the lock icon (secured networks only) pinned to the
-// right edge - not [ssid] ... [signal, status, lock] all clustered together.
+// remaining width, and the lock icon (secured networks only) and forget
+// button (saved networks only) pinned to the right edge - not
+// [ssid] ... [signal, status, lock, forget] all clustered together.
 // `index` selects this row's slot in s_wifi_click_ctx - see that array's
 // declaration and wifi_ap_click_cb().
 static void build_wifi_ap_row(const wifi_display_row_t *disp_row, uint8_t index)
@@ -1487,6 +1500,30 @@ static void build_wifi_ap_row(const wifi_display_row_t *disp_row, uint8_t index)
     if (disp_row->secured)
     {
         build_lock_icon(row);
+    }
+
+    // "Forget" button, saved networks only - same 28x28 red-tinted trash
+    // button as build_watchlist_symbol_row()'s remove button. Being a
+    // clickable child of the (also clickable) row, LVGL dispatches a tap
+    // here to this button, not to wifi_ap_click_cb() on the row.
+    if (disp_row->saved)
+    {
+        lv_obj_t *forget_btn = lv_button_create(row);
+        lv_obj_remove_style_all(forget_btn);
+        make_plain_container(forget_btn);
+        lv_obj_add_flag(forget_btn, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_size(forget_btn, 28, 28);
+        lv_obj_set_style_radius(forget_btn, 8, 0);
+        lv_obj_set_style_bg_color(forget_btn, lv_color_hex(0x241318), 0);
+        lv_obj_set_style_bg_opa(forget_btn, LV_OPA_COVER, 0);
+        lv_obj_set_flex_flow(forget_btn, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(forget_btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_ext_click_area(forget_btn, 8);
+        lv_obj_add_event_cb(forget_btn, wifi_forget_click_cb, LV_EVENT_CLICKED, ctx);
+
+        lv_obj_t *forget_icon = lv_label_create(forget_btn);
+        lv_obj_set_style_text_color(forget_icon, COLOR_DOWN, 0);
+        lv_label_set_text(forget_icon, LV_SYMBOL_TRASH);
     }
 }
 
