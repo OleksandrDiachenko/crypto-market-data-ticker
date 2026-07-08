@@ -1114,9 +1114,15 @@ static void wifi_password_eye_toggle_cb(lv_event_t *e)
 // plain shift toggle.
 
 // Custom mode IDs beyond LVGL's built-in TEXT_LOWER/TEXT_UPPER, used with
-// lv_keyboard_set_mode() below.
-#define WIFI_KB_MODE_SYM_1 2
-#define WIFI_KB_MODE_SYM_2 3
+// lv_keyboard_set_mode() below. lv_keyboard_set_map() writes into LVGL's
+// shared *global* mode->map table (kb_map[]/kb_ctrl[] in lv_keyboard.c;
+// there is no per-object storage), so every custom mode ID used anywhere in
+// the app must be unique across *all* keyboards, not just within this one -
+// reusing an ID (e.g. matching WATCHLIST_KB_MODE_SYM_1/2 below) lets
+// whichever screen is built last silently overwrite the other's symbol-page
+// map. USER_1/2 vs the watchlist keyboard's USER_3/4 keep the two apart.
+#define WIFI_KB_MODE_SYM_1 LV_KEYBOARD_MODE_USER_1
+#define WIFI_KB_MODE_SYM_2 LV_KEYBOARD_MODE_USER_2
 
 // Text mode - lowercase letters
 static const char *const s_wifi_kb_map_lc[] = {
@@ -1203,24 +1209,43 @@ static void wifi_keyboard_event_cb(lv_event_t *e)
         wifi_password_connect_cb(e);
         return;
     }
+    // Every branch below re-asserts this keyboard's own map/ctrl-map right
+    // after lv_keyboard_set_mode() rather than trusting its result: LVGL
+    // stores per-mode maps in one *global* table shared by every lv_keyboard
+    // in the app (kb_map[]/kb_ctrl[] in lv_keyboard.c - there is no
+    // per-object storage, even for the built-in TEXT_LOWER/TEXT_UPPER
+    // modes), so whichever keyboard last called lv_keyboard_set_map() for a
+    // given mode silently wins for every other keyboard using that same
+    // mode too. The watchlist "Add symbol" keyboard shares TEXT_LOWER/UPPER
+    // with this one and is built after it, so without this override,
+    // switching case here would render *its* "Search" action key instead of
+    // "Connect".
     if (strcmp(txt, "ABC") == 0)
     {
         lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_UPPER);
+        lv_buttonmatrix_set_map(kb, s_wifi_kb_map_uc);
+        lv_buttonmatrix_set_ctrl_map(kb, s_wifi_kb_ctrl_map);
         return;
     }
     if (strcmp(txt, "abc") == 0)
     {
         lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+        lv_buttonmatrix_set_map(kb, s_wifi_kb_map_lc);
+        lv_buttonmatrix_set_ctrl_map(kb, s_wifi_kb_ctrl_map);
         return;
     }
     if (strcmp(txt, "123") == 0 || strcmp(txt, "!?*") == 0)
     {
         lv_keyboard_set_mode(kb, WIFI_KB_MODE_SYM_1);
+        lv_buttonmatrix_set_map(kb, s_wifi_kb_map_sym_1);
+        lv_buttonmatrix_set_ctrl_map(kb, s_wifi_kb_ctrl_map_sym);
         return;
     }
     if (strcmp(txt, "#+=") == 0)
     {
         lv_keyboard_set_mode(kb, WIFI_KB_MODE_SYM_2);
+        lv_buttonmatrix_set_map(kb, s_wifi_kb_map_sym_2);
+        lv_buttonmatrix_set_ctrl_map(kb, s_wifi_kb_ctrl_map_sym);
         return;
     }
 
@@ -2077,10 +2102,15 @@ static void build_watchlist_manage_screen(lv_obj_t *screen)
 // SSID field accept anything and validating server-side.
 
 // Custom mode IDs beyond LVGL's built-in TEXT_LOWER/TEXT_UPPER, used with
-// lv_keyboard_set_mode() below - same technique as WIFI_KB_MODE_SYM_1/2
-// (distinct macro names since both live in this same translation unit).
-#define WATCHLIST_KB_MODE_SYM_1 2
-#define WATCHLIST_KB_MODE_SYM_2 3
+// lv_keyboard_set_mode() below - same technique as WIFI_KB_MODE_SYM_1/2, but
+// with distinct USER_3/4 values. lv_keyboard_set_map() writes into LVGL's
+// shared global mode->map table (see the comment by WIFI_KB_MODE_SYM_1/2), so
+// reusing IDs 2/3 here used to let this screen's build (which runs after
+// build_wifi_password_screen()) silently overwrite the Wi-Fi keyboard's
+// symbol-page map with this one's - "Search" would render, and get typed
+// literally, when the Wi-Fi "Add Network" keyboard switched to symbols.
+#define WATCHLIST_KB_MODE_SYM_1 LV_KEYBOARD_MODE_USER_3
+#define WATCHLIST_KB_MODE_SYM_2 LV_KEYBOARD_MODE_USER_4
 
 static const char *const s_watchlist_kb_map_lc[] = {
     "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
@@ -2149,24 +2179,39 @@ static void watchlist_add_keyboard_event_cb(lv_event_t *e)
         watchlist_add_check_cb(e);
         return;
     }
+    // See the matching comment in wifi_keyboard_event_cb(): lv_keyboard's
+    // per-mode maps live in one global table shared by every lv_keyboard in
+    // the app, so each branch re-asserts this keyboard's own map/ctrl-map
+    // right after lv_keyboard_set_mode() instead of trusting it - otherwise
+    // this keyboard (built after the Wi-Fi one, sharing its TEXT_LOWER/UPPER
+    // modes) would keep winning that table and the Wi-Fi keyboard would show
+    // "Search" instead of "Connect" after any case switch.
     if (strcmp(txt, "ABC") == 0)
     {
         lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_UPPER);
+        lv_buttonmatrix_set_map(kb, s_watchlist_kb_map_uc);
+        lv_buttonmatrix_set_ctrl_map(kb, s_watchlist_kb_ctrl_map);
         return;
     }
     if (strcmp(txt, "abc") == 0)
     {
         lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+        lv_buttonmatrix_set_map(kb, s_watchlist_kb_map_lc);
+        lv_buttonmatrix_set_ctrl_map(kb, s_watchlist_kb_ctrl_map);
         return;
     }
     if (strcmp(txt, "123") == 0 || strcmp(txt, "!?*") == 0)
     {
         lv_keyboard_set_mode(kb, WATCHLIST_KB_MODE_SYM_1);
+        lv_buttonmatrix_set_map(kb, s_watchlist_kb_map_sym_1);
+        lv_buttonmatrix_set_ctrl_map(kb, s_watchlist_kb_ctrl_map_sym);
         return;
     }
     if (strcmp(txt, "#+=") == 0)
     {
         lv_keyboard_set_mode(kb, WATCHLIST_KB_MODE_SYM_2);
+        lv_buttonmatrix_set_map(kb, s_watchlist_kb_map_sym_2);
+        lv_buttonmatrix_set_ctrl_map(kb, s_watchlist_kb_ctrl_map_sym);
         return;
     }
 
