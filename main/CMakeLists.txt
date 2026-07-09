@@ -14,6 +14,7 @@ idf_component_register(
         settings_store
         time_sync
         app_state
+        display_format
         ota_client
         nvs_flash
         console

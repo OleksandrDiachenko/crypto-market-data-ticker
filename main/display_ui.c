@@ -2,6 +2,7 @@
 
 #include "app_state.h"
 #include "board_jc4880p443c.h"
+#include "display_format.h"
 #include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_log.h"
@@ -39,6 +40,15 @@ static const char *TAG = "display_ui";
 #define NAV_BUTTON_WIDTH_PX 130
 #define WIFI_PASSWORD_FIELD_HEIGHT_PX 54 // matches the eye-toggle button below it
 #define UPDATE_PERIOD_MS 1000
+// Fixed integer range fed to lv_chart_set_axis_range()/set_series_ext_y_array().
+// Sparkline points are normalized into this range via
+// display_format_normalize_value() rather than a fixed "* 100 cents" scale,
+// so low-priced symbols (sub-cent movement) don't collapse into a flat or
+// 0/1-jittering line - see docs/testing.md's display_format entry.
+#define CHART_SCALE_MAX 10000
+// (field_row_width_px = LCD_H_RES*9/10 + 20 = 452) minus the match card's
+// 14px side padding, split across the 3 stat columns in build_watchlist_stat().
+#define WATCHLIST_MATCH_STAT_VALUE_WIDTH_PX 140
 
 #define COLOR_INK lv_color_hex(0x0A0C10)
 #define COLOR_STATUSBAR_BG lv_color_hex(0x0F1216)
@@ -321,20 +331,6 @@ static const char *ota_err_message(ota_client_err_t err)
     }
 }
 
-static void format_price(double value, char *out, size_t out_len)
-{
-    // Sub-$1 pairs (e.g. ADAUSDT, DOGEUSDT) need more decimals to show any
-    // meaningful movement; higher-value pairs would be noisy at 4 decimals.
-    if (value >= 1.0)
-    {
-        snprintf(out, out_len, "%.2f", value);
-    }
-    else
-    {
-        snprintf(out, out_len, "%.4f", value);
-    }
-}
-
 static void destroy_rows(void)
 {
     for (uint8_t i = 0; i < s_row_count; i++)
@@ -443,7 +439,14 @@ static void build_row(uint8_t index)
     row->range_label = lv_label_create(left);
     lv_obj_set_style_text_color(row->range_label, COLOR_MUTED, 0);
     lv_obj_set_style_text_font(row->range_label, &lv_font_montserrat_14, 0);
-    lv_label_set_text(row->range_label, "-- / --");
+    // Fixed width so the label never bleeds into the chart column. The text
+    // itself is always composed as an explicit two-line "L <lo>\nH <hi>"
+    // (see update_row()), so every row's range label is the same height
+    // regardless of how many decimals a symbol needs - LONG_DOT is just a
+    // defensive fallback in case a single line is ever wider than this column.
+    lv_obj_set_width(row->range_label, ROW_SIDE_COL_WIDTH_PX);
+    lv_label_set_long_mode(row->range_label, LV_LABEL_LONG_DOT);
+    lv_label_set_text(row->range_label, "L --\nH --");
 
     // Middle: sparkline.
     row->chart = lv_chart_create(row->row);
@@ -456,6 +459,10 @@ static void build_row(uint8_t index)
     lv_obj_set_style_size(row->chart, 0, 0, LV_PART_INDICATOR); // hide point markers
     lv_obj_set_style_line_width(row->chart, 3, LV_PART_ITEMS);
     row->series = lv_chart_add_series(row->chart, COLOR_MUTED, LV_CHART_AXIS_PRIMARY_Y);
+    // Fixed once at setup - point values are pre-normalized into this same
+    // range in update_row() via display_format_normalize_value(), so the
+    // axis itself never needs to change per tick.
+    lv_chart_set_axis_range(row->chart, LV_CHART_AXIS_PRIMARY_Y, 0, CHART_SCALE_MAX);
     lv_obj_add_event_cb(row->chart, chart_draw_event_cb, LV_EVENT_DRAW_TASK_ADDED, row);
 
     // Right: price + change, right-aligned.
@@ -469,6 +476,11 @@ static void build_row(uint8_t index)
     row->price_label = lv_label_create(right);
     lv_obj_set_style_text_color(row->price_label, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(row->price_label, &lv_font_montserrat_20, 0);
+    // Same overflow safety net as range_label above, kept right-aligned to
+    // match the pre-existing flush-right look for short prices.
+    lv_obj_set_width(row->price_label, ROW_SIDE_COL_WIDTH_PX);
+    lv_obj_set_style_text_align(row->price_label, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_long_mode(row->price_label, LV_LABEL_LONG_DOT);
 
     row->change_label = lv_label_create(right);
     lv_obj_set_style_text_color(row->change_label, COLOR_MUTED, 0);
@@ -515,7 +527,7 @@ static void update_row(uint8_t index)
     {
         // Never synced yet (INIT), or DEGRADED before a first sync ever
         // succeeded - nothing to compute a price/range/chart from.
-        lv_label_set_text(row->range_label, "-- / --");
+        lv_label_set_text(row->range_label, "L --\nH --");
         lv_label_set_text(row->price_label, "");
         lv_obj_set_style_text_color(row->change_label, COLOR_MUTED, 0);
         lv_label_set_text(row->change_label, meta.state == APP_STATE_SYMBOL_DEGRADED ? "Resyncing..." : "Loading...");
@@ -551,29 +563,26 @@ static void update_row(uint8_t index)
     char price_buf[24];
     char hi_buf[24];
     char lo_buf[24];
-    char range_buf[2 * sizeof(hi_buf) + 4]; // "<hi> / <lo>" plus separator and NUL
+    // Explicit "L <lo>\nH <hi>" - always two lines, low-to-high order with
+    // letter labels so the reading direction never needs to be memorized.
+    // An embedded newline (rather than a single "hi / lo" line left to
+    // LVGL's auto-wrap) guarantees the break always falls between the two
+    // values instead of mid-digit, and keeps every row the same height.
+    char range_buf[2 * sizeof(hi_buf) + 8];
     char change_buf[16];
-    format_price(last_close, price_buf, sizeof(price_buf));
-    format_price(hi, hi_buf, sizeof(hi_buf));
-    format_price(lo, lo_buf, sizeof(lo_buf));
-    snprintf(range_buf, sizeof(range_buf), "%s / %s", hi_buf, lo_buf);
+    display_format_price(last_close, price_buf, sizeof(price_buf));
+    display_format_price(hi, hi_buf, sizeof(hi_buf));
+    display_format_price(lo, lo_buf, sizeof(lo_buf));
+    snprintf(range_buf, sizeof(range_buf), "L %s\nH %s", lo_buf, hi_buf);
     snprintf(change_buf, sizeof(change_buf), "%+.2f%%", change_pct);
 
     lv_label_set_text(row->range_label, range_buf);
     lv_chart_set_series_color(row->chart, row->series, up ? COLOR_UP : COLOR_DOWN);
 
-    int32_t min_scaled = (int32_t)lround(lo * 100.0);
-    int32_t max_scaled = (int32_t)lround(hi * 100.0);
-    if (min_scaled == max_scaled)
-    {
-        max_scaled = min_scaled + 1; // avoid a zero-height axis range
-    }
-    lv_chart_set_axis_range(row->chart, LV_CHART_AXIS_PRIMARY_Y, min_scaled, max_scaled);
-
     int32_t *chart_data = s_chart_scratch[index];
     for (uint16_t i = 0; i < count; i++)
     {
-        chart_data[i] = (int32_t)lround(s_klines_scratch[i].close * 100.0);
+        chart_data[i] = display_format_normalize_value(s_klines_scratch[i].close, lo, hi, CHART_SCALE_MAX);
     }
     lv_chart_set_point_count(row->chart, count);
     lv_chart_set_series_ext_y_array(row->chart, row->series, chart_data);
@@ -2920,12 +2929,14 @@ static void watchlist_add_check_cb(lv_event_t *e)
         char price_buf[24];
         char hi_buf[24];
         char lo_buf[24];
-        char range_buf[2 * sizeof(hi_buf) + 4];
+        // Same "L <lo>\nH <hi>" style as the watchlist row - see the comment
+        // at that call site in update_row().
+        char range_buf[2 * sizeof(hi_buf) + 8];
         char change_buf[16];
-        format_price(ticker.last_price, price_buf, sizeof(price_buf));
-        format_price(ticker.high_price, hi_buf, sizeof(hi_buf));
-        format_price(ticker.low_price, lo_buf, sizeof(lo_buf));
-        snprintf(range_buf, sizeof(range_buf), "%s / %s", hi_buf, lo_buf);
+        display_format_price(ticker.last_price, price_buf, sizeof(price_buf));
+        display_format_price(ticker.high_price, hi_buf, sizeof(hi_buf));
+        display_format_price(ticker.low_price, lo_buf, sizeof(lo_buf));
+        snprintf(range_buf, sizeof(range_buf), "L %s\nH %s", lo_buf, hi_buf);
         snprintf(change_buf, sizeof(change_buf), "%+.2f%%", ticker.price_change_percent);
 
         lv_label_set_text(s_watchlist_match_last_price_label, price_buf);
@@ -2997,6 +3008,10 @@ static lv_obj_t *build_watchlist_stat(lv_obj_t *parent, const char *key_text)
     lv_obj_t *value_label = lv_label_create(col);
     lv_obj_set_style_text_color(value_label, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(value_label, &lv_font_montserrat_14, 0);
+    // Overflow safety net: a micro-cap symbol's 8-decimal "hi / lo" text can
+    // outrun this column - truncate with "..." instead of overlapping siblings.
+    lv_obj_set_width(value_label, WATCHLIST_MATCH_STAT_VALUE_WIDTH_PX);
+    lv_label_set_long_mode(value_label, LV_LABEL_LONG_DOT);
     lv_label_set_text(value_label, "--");
     return value_label;
 }

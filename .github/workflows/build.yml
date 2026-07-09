@@ -43,3 +43,6 @@ jobs:
 
       - name: Run ota_client host tests
         run: make -C components/ota_client/host_test test
+
+      - name: Run display_format host tests
+        run: make -C components/display_format/host_test test
