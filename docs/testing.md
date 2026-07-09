@@ -30,6 +30,13 @@
   ignore, volume/trade-count accumulation only on a closed 1s kline). Pure
   C, same gcc + ASan/UBSan setup, no ESP-IDF dependency. Runs in the same
   `host-tests` CI job.
+- `make -C components/display_format/host_test test` — host-side tests for
+  the price/number formatting used in the Watchlist (adaptive 4-8 decimal
+  precision for sub-$1 prices, K/M/B/T abbreviation above the 9-integer-digit
+  threshold) and the chart series normalization used to scale kline closes
+  into a fixed-point axis range without flattening low-priced symbols'
+  sparklines. Pure C, same gcc + ASan/UBSan setup, no ESP-IDF dependency.
+  Runs in the same `host-tests` CI job.
 
 ## Planned Tests
 - host-side parser tests
