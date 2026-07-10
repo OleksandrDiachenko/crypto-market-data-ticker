@@ -455,7 +455,7 @@ fail:
     return MARKET_DATA_ERR_PARSE;
 }
 
-market_data_ws_parse_result_t market_data_ws_stream_parser_finish(market_data_ws_stream_parser_t *p)
+market_data_ws_parse_result_t market_data_ws_stream_parser_finish(const market_data_ws_stream_parser_t *p)
 {
     if (p->state != MARKET_DATA_WSP_DONE)
     {

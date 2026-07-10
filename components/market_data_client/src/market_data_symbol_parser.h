@@ -66,7 +66,7 @@ void market_data_symbol_parser_init(market_data_symbol_parser_t *p, market_data_
 // detected; finish() reports whether the document ended in a valid state
 // (symbols[0]'s object closed with a "status" field seen).
 market_data_err_t market_data_symbol_parser_feed(market_data_symbol_parser_t *p, const char *buf, size_t len);
-market_data_err_t market_data_symbol_parser_finish(market_data_symbol_parser_t *p);
+market_data_err_t market_data_symbol_parser_finish(const market_data_symbol_parser_t *p);
 
 #ifdef __cplusplus
 }

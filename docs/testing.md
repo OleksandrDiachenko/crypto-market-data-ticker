@@ -38,6 +38,26 @@
   sparklines. Pure C, same gcc + ASan/UBSan setup, no ESP-IDF dependency.
   Runs in the same `host-tests` CI job.
 
+## Static Analysis
+- `cppcheck` — runs in CI (`cppcheck` job in `.github/workflows/build.yml`)
+  against the same 15 pure-logic `.c` files the `host-tests` job already
+  compiles with plain gcc (no ESP-IDF includes). Scoped deliberately: those
+  files have zero ESP-IDF headers, so cppcheck needs no `$IDF_PATH` and
+  produces no missing-include noise. `main/*.c` and the ESP-IDF-glue `.c`
+  files in each component (e.g. `wifi_manager.c`, `market_data_client.c`)
+  are out of scope for the same reason host tests don't compile them — they
+  need `esp_wifi.h`/`esp_http_client.h`/NVS/LVGL headers unavailable on a
+  plain `ubuntu-latest` runner. This job is blocking (`--error-exitcode=1`).
+- `clang-format` — a `.clang-format` (repo root) codifies the project's
+  existing style (LLVM base, Allman braces, 4-space indent, 120-column
+  limit). The `format-check` CI job runs `clang-format --dry-run --Werror`
+  across `components/` and `main/` but is **non-blocking**
+  (`continue-on-error: true`): no `.clang-format` existed before this was
+  added, so a full-tree dry-run hasn't been reviewed yet and would likely
+  flag most of the codebase. The job surfaces drift on every PR without
+  forcing a large reformat commit; flipping it to blocking is a deliberate
+  future step once someone reviews and applies that diff.
+
 ## Planned Tests
 - host-side parser tests
 - hardware tests are manual for now (see `docs/validation/`)
