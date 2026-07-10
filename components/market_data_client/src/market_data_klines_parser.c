@@ -230,7 +230,7 @@ market_data_err_t market_data_klines_parser_feed(market_data_klines_parser_t *p,
     return MARKET_DATA_OK;
 }
 
-market_data_err_t market_data_klines_parser_finish(market_data_klines_parser_t *p, uint16_t *out_count)
+market_data_err_t market_data_klines_parser_finish(const market_data_klines_parser_t *p, uint16_t *out_count)
 {
     if (p->state != MARKET_DATA_KLP_DONE)
     {

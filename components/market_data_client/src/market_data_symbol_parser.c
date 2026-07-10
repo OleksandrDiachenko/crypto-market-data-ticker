@@ -304,7 +304,7 @@ fail:
     return MARKET_DATA_ERR_PARSE;
 }
 
-market_data_err_t market_data_symbol_parser_finish(market_data_symbol_parser_t *p)
+market_data_err_t market_data_symbol_parser_finish(const market_data_symbol_parser_t *p)
 {
     return p->state == MARKET_DATA_SYP_DONE ? MARKET_DATA_OK : MARKET_DATA_ERR_PARSE;
 }

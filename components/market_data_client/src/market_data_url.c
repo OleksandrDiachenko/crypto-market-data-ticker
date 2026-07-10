@@ -112,7 +112,6 @@ market_data_err_t market_data_url_build_klines(const char *base_url, const marke
         {
             return MARKET_DATA_ERR_INVALID_ARG;
         }
-        len += (size_t)written;
     }
     return MARKET_DATA_OK;
 }

@@ -51,7 +51,7 @@ market_data_err_t market_data_klines_parser_feed(market_data_klines_parser_t *p,
 // Returns MARKET_DATA_OK with *out_count set if the document ended cleanly
 // (outer array closed); MARKET_DATA_ERR_PARSE if the stream ended mid-value
 // (a truncated response).
-market_data_err_t market_data_klines_parser_finish(market_data_klines_parser_t *p, uint16_t *out_count);
+market_data_err_t market_data_klines_parser_finish(const market_data_klines_parser_t *p, uint16_t *out_count);
 
 #ifdef __cplusplus
 }

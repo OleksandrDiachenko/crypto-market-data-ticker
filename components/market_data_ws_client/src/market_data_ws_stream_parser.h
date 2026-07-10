@@ -92,7 +92,7 @@ market_data_err_t market_data_ws_stream_parser_feed(market_data_ws_stream_parser
 
 // Call once input is exhausted. Only meaningful if feed() never returned an
 // error.
-market_data_ws_parse_result_t market_data_ws_stream_parser_finish(market_data_ws_stream_parser_t *p);
+market_data_ws_parse_result_t market_data_ws_stream_parser_finish(const market_data_ws_stream_parser_t *p);
 
 #ifdef __cplusplus
 }
