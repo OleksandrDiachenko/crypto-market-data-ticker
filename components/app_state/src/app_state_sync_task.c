@@ -236,3 +236,8 @@ esp_err_t app_state_sync_task_start(void)
     BaseType_t ok = xTaskCreate(sync_task_fn, "app_state_sync", SYNC_TASK_STACK_SIZE, NULL, SYNC_TASK_PRIORITY, NULL);
     return (ok == pdPASS) ? ESP_OK : ESP_ERR_NO_MEM;
 }
+
+void app_state_sync_task_force_resync(void)
+{
+    s_force_resync_all = true;
+}

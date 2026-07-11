@@ -200,6 +200,12 @@ void market_data_ws_client_stop(void)
     esp_websocket_client_stop(s_client);
     esp_websocket_client_destroy(s_client);
     s_client = NULL;
+
+    if (s_update_queue != NULL)
+    {
+        vQueueDelete(s_update_queue);
+        s_update_queue = NULL;
+    }
 }
 
 QueueHandle_t market_data_ws_client_get_update_queue(void)

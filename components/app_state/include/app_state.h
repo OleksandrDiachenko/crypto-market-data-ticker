@@ -107,12 +107,16 @@ typedef enum
 {
     APP_STATE_WATCHLIST_SYMBOL_ADDED,
     APP_STATE_WATCHLIST_SYMBOL_REMOVED,
+    // No symbol payload - api_region_settings_t changed (Settings > Time >
+    // Region, auto or manual), so the WS connection's host needs a
+    // reconnect. See docs/decisions/0009-regional-server-auto-selection.md.
+    APP_STATE_REGION_CHANGED,
 } app_state_watchlist_event_kind_t;
 
 typedef struct
 {
     app_state_watchlist_event_kind_t kind;
-    char symbol[SETTINGS_SYMBOL_MAX_LEN + 1];
+    char symbol[SETTINGS_SYMBOL_MAX_LEN + 1]; // unused for APP_STATE_REGION_CHANGED
 } app_state_watchlist_event_t;
 
 // Depth sized for a person tapping add/remove far faster than any consumer
@@ -125,6 +129,13 @@ typedef struct
 // market_data_ws_client_get_update_queue()'s doc comment for why only one
 // task may drain this.
 QueueHandle_t app_state_get_watchlist_event_queue(void);
+
+// Pushes an APP_STATE_REGION_CHANGED event onto the same queue. Called by
+// display_ui.c after api_region_settings_t changes (auto-derived from a
+// new tz_label, or a manual Settings > Time > Region choice) so
+// app_state_ws_task can reconnect against the new region's host - see
+// docs/decisions/0009-regional-server-auto-selection.md.
+void app_state_notify_region_changed(void);
 
 // --- writer API (app_state_sync_task only) ---
 
