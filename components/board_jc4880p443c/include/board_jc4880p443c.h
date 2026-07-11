@@ -25,6 +25,12 @@ esp_err_t board_jc4880p443c_touch_start(lv_display_t *display, lv_indev_t **out_
 esp_err_t board_jc4880p443c_backlight_on(void);
 esp_err_t board_jc4880p443c_backlight_off(void);
 
+/**
+ * Sets backlight brightness as a percentage (0-100) of full PWM duty.
+ * Values above 100 are clamped.
+ */
+esp_err_t board_jc4880p443c_backlight_set_percent(uint8_t percent);
+
 bool board_jc4880p443c_display_lock(uint32_t timeout_ms);
 void board_jc4880p443c_display_unlock(void);
 

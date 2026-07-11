@@ -91,6 +91,11 @@ void settings_display_init_default(display_settings_t *out)
     out->magic = SETTINGS_DISPLAY_MAGIC;
     out->version = SETTINGS_DISPLAY_VERSION;
     out->brightness_percent = 80;
+    out->night_mode_enabled = 0;
+    out->night_start_hour = 22;
+    out->night_start_minute = 0;
+    out->night_end_hour = 7;
+    out->night_end_minute = 0;
 }
 
 void settings_symbols_init_default(symbol_settings_t *out)
@@ -126,6 +131,18 @@ settings_codec_status_t settings_display_validate(const display_settings_t *db)
         return status;
     }
     if (db->brightness_percent < 1 || db->brightness_percent > 100)
+    {
+        return SETTINGS_CODEC_BAD_RANGE;
+    }
+    if (db->night_mode_enabled > 1)
+    {
+        return SETTINGS_CODEC_BAD_RANGE;
+    }
+    if (db->night_start_hour > 23 || db->night_end_hour > 23)
+    {
+        return SETTINGS_CODEC_BAD_RANGE;
+    }
+    if (db->night_start_minute > 59 || db->night_end_minute > 59)
     {
         return SETTINGS_CODEC_BAD_RANGE;
     }

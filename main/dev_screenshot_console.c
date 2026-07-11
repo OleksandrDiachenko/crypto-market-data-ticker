@@ -50,8 +50,14 @@ static int cmd_screenshot(int argc, char **argv)
     // lv_screen_active() is the one root screen; every sub-panel
     // (Watchlist/Settings/Wi-Fi/etc. in display_ui.c) is a child of it,
     // shown/hidden via a flag, so this always captures whatever is
-    // currently visible with no per-page logic needed.
-    lv_result_t res = lv_snapshot_take_to_draw_buf(lv_screen_active(), LV_COLOR_FORMAT_RGB565, &draw_buf);
+    // currently visible with no per-page logic needed. The one exception is
+    // a modal lv_msgbox (e.g. Settings > Display's night-mode time picker),
+    // which LVGL parents to lv_layer_top() instead - a sibling of the
+    // screen, not a descendant of it - so it would otherwise be invisible
+    // to a snapshot rooted at lv_screen_active(). Prefer the top layer
+    // whenever it actually has content.
+    lv_obj_t *snapshot_root = lv_obj_get_child_count(lv_layer_top()) > 0 ? lv_layer_top() : lv_screen_active();
+    lv_result_t res = lv_snapshot_take_to_draw_buf(snapshot_root, LV_COLOR_FORMAT_RGB565, &draw_buf);
 
     // Release the lock now, before the (slow) serial transfer below - it's
     // only needed while LVGL is actually being read into our buffer, not

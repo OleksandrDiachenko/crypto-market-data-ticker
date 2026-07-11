@@ -374,6 +374,18 @@ esp_err_t board_jc4880p443c_backlight_off(void)
     return ledc_update_duty(LEDC_LOW_SPEED_MODE, BOARD_LCD_BRIGHTNESS_LEDC_CHANNEL);
 }
 
+esp_err_t board_jc4880p443c_backlight_set_percent(uint8_t percent)
+{
+    if (percent > 100)
+    {
+        percent = 100;
+    }
+    uint32_t duty = ((uint32_t)percent * 1023) / 100;
+    ESP_RETURN_ON_ERROR(ledc_set_duty(LEDC_LOW_SPEED_MODE, BOARD_LCD_BRIGHTNESS_LEDC_CHANNEL, duty), TAG,
+                         "set backlight duty");
+    return ledc_update_duty(LEDC_LOW_SPEED_MODE, BOARD_LCD_BRIGHTNESS_LEDC_CHANNEL);
+}
+
 bool board_jc4880p443c_display_lock(uint32_t timeout_ms)
 {
     return lvgl_port_lock(timeout_ms);

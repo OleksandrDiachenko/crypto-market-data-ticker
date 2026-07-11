@@ -17,7 +17,7 @@ extern "C" {
 #endif
 
 #define SETTINGS_DISPLAY_MAGIC 0x53444953u // 'SDIS'
-#define SETTINGS_DISPLAY_VERSION 1u
+#define SETTINGS_DISPLAY_VERSION 2u // bumped: added night mode fields (Settings > Display)
 
 #define SETTINGS_SYMBOLS_MAGIC 0x53534d42u // 'SSMB'
 #define SETTINGS_SYMBOLS_VERSION 2u // bumped alongside SETTINGS_MAX_WATCHLIST - layout size changed
@@ -40,8 +40,12 @@ typedef struct
     uint16_t reserved;
     uint32_t crc32;
     uint8_t brightness_percent; // 1-100, default 80
-    uint8_t reserved2[3];       // room for theme/timeout once the board
-                                // supports more than on/off backlight
+    uint8_t night_mode_enabled; // 0/1, default 0
+    uint8_t night_start_hour;   // 0-23, default 22
+    uint8_t night_start_minute; // 0-59, default 0
+    uint8_t night_end_hour;     // 0-23, default 7
+    uint8_t night_end_minute;   // 0-59, default 0
+    uint8_t reserved2[2];       // pad to 4-byte alignment
 } display_settings_t;
 
 typedef struct

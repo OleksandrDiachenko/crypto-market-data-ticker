@@ -18,7 +18,10 @@ Build an ESP-IDF based ESP32-P4 market data terminal as a professional embedded 
 - Phase 14 done: Apache-2.0 `LICENSE`/`NOTICE`, a Settings > About screen
   with Binance data attribution, and a first-run-after-update disclaimer
   gated on the firmware version (see `docs/decisions/0010-licensing-and-disclaimer.md`)
-- Phase 15 (portfolio polish, renumbered from 13) not started
+- Phase 15 done: a new Settings > Display screen with a brightness slider
+  and a night mode that dims to a fixed minimum between a configurable
+  start/end time (see `docs/decisions/0011-display-brightness-night-mode.md`)
+- Phase 16 (portfolio polish, renumbered from 13) not started
 
 ## Phases
 
@@ -502,7 +505,35 @@ Draft disclaimer text (slice 3, English - UI language):
 >
 > Tap **Accept** to continue.
 
-### Phase 15: Portfolio polish
+### Phase 15: Display settings - brightness & night mode
+Status: Done
+
+`display_settings_t` had carried a persisted `brightness_percent` field
+(with `reserved2` padding explicitly earmarked for it) since it was first
+added, but nothing ever loaded or applied it - the backlight only ever ran
+at full or zero duty. This phase adds a `Settings > Display` screen with a
+brightness slider and a night mode that dims the backlight to a fixed
+minimum between a user-configured start/end time. See
+`docs/decisions/0011-display-brightness-night-mode.md` for the full design.
+
+Acceptance criteria:
+- [x] `board_jc4880p443c_backlight_set_percent()` maps 0-100% onto the
+      existing 10-bit LEDC channel
+- [x] `display_settings_t` v1 -> v2: night mode enabled flag + start/end
+      hour/minute, with codec seal/validate range checks and host tests
+- [x] `Settings > Display` screen: a brightness slider (10-100%) and an
+      `lv_switch` night-mode toggle with Start/End rows (hidden while off)
+      opening a shared hour/minute roller picker in a modal msgbox
+- [x] Night mode dims to a fixed floor (`DISPLAY_NIGHT_BRIGHTNESS_PERCENT`)
+      while enabled and the synced local time falls in `[start, end)`,
+      re-checked every second alongside the existing clock update; a
+      `start > end` window correctly spans midnight
+- [x] Validated on real hardware: both the Display screen and the night-mode
+      picker msgbox render correctly via `dev_screenshot.py --nav display` /
+      `--nav night_time` with dark-themed, muted-accent slider/switch/rollers,
+      and `idf.py build` + host tests pass
+
+### Phase 16: Portfolio polish
 Status: Planned
 
 Acceptance criteria:

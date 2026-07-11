@@ -41,6 +41,11 @@ static const char *TAG = "display_ui";
 #define TIME_LIST_ROW_HEIGHT_PX 60 // Time format / Date format / Time zones list rows
 #define WIFI_PASSWORD_FIELD_HEIGHT_PX 54 // matches the eye-toggle button below it
 #define UPDATE_PERIOD_MS 1000
+// Settings > Display's slider floor and the fixed level night mode dims to -
+// same value on purpose, so night mode is never brighter than the user's own
+// minimum and there's only one "how dim can this get" constant to reason about.
+#define DISPLAY_BRIGHTNESS_MIN_PERCENT 10
+#define DISPLAY_NIGHT_BRIGHTNESS_PERCENT 10
 // Fixed integer range fed to lv_chart_set_axis_range()/set_series_ext_y_array().
 // Sparkline points are normalized into this range via
 // display_format_normalize_value() rather than a fixed "* 100 cents" scale,
@@ -61,6 +66,15 @@ static const char *TAG = "display_ui";
 #define COLOR_WARN lv_color_hex(0xF2A93C)
 #define COLOR_HAIRLINE lv_color_hex(0x1B1F26)
 #define COLOR_ACCENT lv_color_hex(0x47C9FF)
+// A toned-down version of COLOR_ACCENT for large fill areas (slider
+// indicator, switch knob track) - the full-brightness accent reads fine as
+// a small icon/checkmark highlight but is glaring across a big filled shape.
+#define COLOR_ACCENT_MUTED lv_color_hex(0x2E6C82)
+// The status bar clock's color - also reused for the brightness slider's
+// knob and the night-mode switch's knob so those two controls' "handle"
+// reads as the same neutral light-gray accent as the clock, not COLOR_TEXT's
+// full-white.
+#define COLOR_CLOCK lv_color_hex(0xB7BCC5)
 
 typedef enum
 {
@@ -78,6 +92,7 @@ typedef enum
     SETTINGS_VIEW_TIME_ZONES,
     SETTINGS_VIEW_TIME_ZONE_CITIES,
     SETTINGS_VIEW_REGION,
+    SETTINGS_VIEW_DISPLAY,
     SETTINGS_VIEW_WIFI,
     SETTINGS_VIEW_WIFI_PASSWORD,
     SETTINGS_VIEW_WATCHLIST_MANAGE,
@@ -108,6 +123,7 @@ static lv_timer_t *s_update_timer;
 static lv_obj_t *s_settings_list;
 static lv_obj_t *s_settings_wifi_row_desc;
 static lv_obj_t *s_settings_locale_row_desc;
+static lv_obj_t *s_settings_display_row_desc;
 static lv_obj_t *s_settings_updates_row_desc;
 static lv_obj_t *s_clock_label;
 static lv_obj_t *s_statusbar_signal_bars[4]; // status bar's wifi signal icon, bars[0..3] short-to-tall
@@ -140,6 +156,35 @@ static lv_obj_t *s_region_check_us;
 // Loaded once at startup; kept up to date by the Time format/Date
 // format/Time zones screens as they save changes.
 static locale_settings_t s_locale;
+
+// Loaded once at startup; kept up to date by the Display screen as it saves
+// changes. s_display_last_applied_percent tracks the last percent actually
+// written to the backlight LEDC duty - 0 is never a valid target (the
+// slider's floor is DISPLAY_BRIGHTNESS_MIN_PERCENT), so it forces the first
+// display_apply_brightness() call to always apply.
+static display_settings_t s_display;
+static uint8_t s_display_last_applied_percent;
+
+static lv_obj_t *s_display_screen;
+static lv_obj_t *s_display_brightness_slider;
+static lv_obj_t *s_display_brightness_value_label;
+static lv_obj_t *s_display_night_switch;
+static lv_obj_t *s_display_night_start_row;
+static lv_obj_t *s_display_night_start_value;
+static lv_obj_t *s_display_night_end_row;
+static lv_obj_t *s_display_night_end_value;
+
+// Settings > Display > Night mode's start/end time picker - a modal msgbox
+// built fresh each time a Start/End row is tapped and deleted on close (a
+// tap outside the rollers, on the backdrop, both commits and closes - see
+// night_time_backdrop_click_cb()), rather than a whole pre-built Settings
+// sub-screen: it's two rollers, not enough content to justify a dedicated
+// page. Which field is being edited is tracked here between the row tap
+// that opens it and the backdrop tap that commits the roller selection.
+static lv_obj_t *s_night_time_msgbox;
+static lv_obj_t *s_night_time_hour_roller;
+static lv_obj_t *s_night_time_minute_roller;
+static bool s_night_time_editing_start;
 
 // Composed/sorted view of one network for display: the connected network
 // first, then every saved profile (in scan range or not), then whatever's
@@ -645,6 +690,7 @@ static void show_settings_view(settings_view_t view)
     lv_obj_add_flag(s_time_zone_screen, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_time_zone_city_screen, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_region_screen, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_display_screen, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_wifi_screen, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_wifi_password_screen, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_watchlist_manage_screen, LV_OBJ_FLAG_HIDDEN);
@@ -672,6 +718,9 @@ static void show_settings_view(settings_view_t view)
         break;
     case SETTINGS_VIEW_REGION:
         target = s_region_screen;
+        break;
+    case SETTINGS_VIEW_DISPLAY:
+        target = s_display_screen;
         break;
     case SETTINGS_VIEW_WIFI:
         target = s_wifi_screen;
@@ -711,6 +760,7 @@ static void set_active_screen(display_ui_screen_t screen)
         lv_obj_add_flag(s_time_zone_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_time_zone_city_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_region_screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_display_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_wifi_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_wifi_password_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_watchlist_manage_screen, LV_OBJ_FLAG_HIDDEN);
@@ -854,6 +904,15 @@ static void update_statusbar(void)
     // "Saved - Not in range" for why (vendored Montserrat has no such glyph).
     lv_label_set_text_fmt(s_settings_locale_row_desc, "%s - %s", s_locale.time_24h ? "24-hour" : "12-hour", tz_desc);
 
+    if (s_display.night_mode_enabled)
+    {
+        lv_label_set_text_fmt(s_settings_display_row_desc, "%u%% - Night mode on", s_display.brightness_percent);
+    }
+    else
+    {
+        lv_label_set_text_fmt(s_settings_display_row_desc, "%u%% brightness", s_display.brightness_percent);
+    }
+
     uint8_t watchlist_count = app_state_symbol_count();
     if (watchlist_count > SETTINGS_MAX_WATCHLIST)
     {
@@ -878,6 +937,44 @@ static void update_statusbar(void)
     else
     {
         lv_label_set_text_fmt(s_settings_updates_row_desc, "Up to date (%s)", ota_info.latest_version);
+    }
+}
+
+// Applies the effective backlight percentage for right now: the user's
+// brightness setting, or DISPLAY_NIGHT_BRIGHTNESS_PERCENT while night mode
+// is enabled and the local time falls within [start, end) - the same
+// time_sync_is_synced()/localtime_r() idiom update_statusbar() uses for the
+// clock above. A start > end window is treated as spanning midnight (e.g.
+// 22:00 -> 07:00). Only touches the LEDC duty when the target actually
+// changes, so this is cheap to call every second from update_timer_cb() as
+// well as right after any brightness/night-mode edit.
+static void display_apply_brightness(void)
+{
+    uint8_t target = s_display.brightness_percent;
+
+    if (s_display.night_mode_enabled && time_sync_is_synced())
+    {
+        time_t now = time(NULL);
+        struct tm tm_now;
+        localtime_r(&now, &tm_now);
+        int cur = tm_now.tm_hour * 60 + tm_now.tm_min;
+        int start = s_display.night_start_hour * 60 + s_display.night_start_minute;
+        int end = s_display.night_end_hour * 60 + s_display.night_end_minute;
+
+        bool in_window = (start <= end) ? (cur >= start && cur < end) : (cur >= start || cur < end);
+        if (in_window)
+        {
+            target = DISPLAY_NIGHT_BRIGHTNESS_PERCENT;
+        }
+    }
+
+    if (target == s_display_last_applied_percent)
+    {
+        return;
+    }
+    if (board_jc4880p443c_backlight_set_percent(target) == ESP_OK)
+    {
+        s_display_last_applied_percent = target;
     }
 }
 
@@ -909,6 +1006,7 @@ static void update_timer_cb(lv_timer_t *timer)
     }
 
     update_statusbar();
+    display_apply_brightness(); // cheap no-op unless night mode's window just opened/closed
 
     // Only worth refreshing (scan results, connection state) while the
     // user is actually looking at it.
@@ -980,7 +1078,7 @@ static void build_statusbar(lv_obj_t *screen)
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
 
     s_clock_label = lv_label_create(bar);
-    lv_obj_set_style_text_color(s_clock_label, lv_color_hex(0xB7BCC5), 0);
+    lv_obj_set_style_text_color(s_clock_label, COLOR_CLOCK, 0);
     lv_obj_set_style_text_font(s_clock_label, &lv_font_montserrat_16, 0);
     lv_label_set_text(s_clock_label, "--:--");
 
@@ -1111,6 +1209,50 @@ static void style_dark_keyboard(lv_obj_t *kb)
     lv_obj_set_style_text_color(kb, COLOR_TEXT, LV_PART_ITEMS);
     lv_obj_set_style_bg_color(kb, COLOR_ACCENT, LV_PART_ITEMS | LV_STATE_CHECKED);
     lv_obj_set_style_text_color(kb, lv_color_hex(0x04141C), LV_PART_ITEMS | LV_STATE_CHECKED);
+}
+
+// Settings > Display's brightness slider, Night mode's on/off switch, and
+// Night mode's hour/minute rollers are this file's only other native
+// (non-fully-custom) widgets - same rationale as
+// style_dark_textarea()/style_dark_keyboard() above.
+static void style_dark_slider(lv_obj_t *slider)
+{
+    lv_obj_set_style_bg_color(slider, lv_color_hex(0x1B1F26), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(slider, COLOR_ACCENT_MUTED, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(slider, COLOR_CLOCK, LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_border_width(slider, 0, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(slider, 6, LV_PART_KNOB);
+}
+
+static void style_dark_switch(lv_obj_t *sw)
+{
+    lv_obj_set_style_bg_color(sw, lv_color_hex(0x1B1F26), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(sw, lv_color_hex(0x2C3440), LV_PART_MAIN);
+    lv_obj_set_style_border_width(sw, 1, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sw, COLOR_ACCENT_MUTED, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(sw, COLOR_CLOCK, LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, LV_PART_KNOB);
+}
+
+static void style_dark_roller(lv_obj_t *roller)
+{
+    lv_obj_set_style_bg_color(roller, lv_color_hex(0x171B21), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(roller, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_text_color(roller, COLOR_MUTED, LV_PART_MAIN);
+    lv_obj_set_style_text_font(roller, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_border_color(roller, lv_color_hex(0x2C3440), LV_PART_MAIN);
+    lv_obj_set_style_border_width(roller, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(roller, 10, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(roller, COLOR_HAIRLINE, LV_PART_SELECTED);
+    lv_obj_set_style_bg_opa(roller, LV_OPA_COVER, LV_PART_SELECTED);
+    lv_obj_set_style_text_color(roller, COLOR_TEXT, LV_PART_SELECTED);
 }
 
 // A tappable row matching the reviewed design: a 40x40 icon chip, a title +
@@ -1313,6 +1455,93 @@ static lv_obj_t *build_selectable_row(lv_obj_t *parent, const char *title, bool 
     }
 
     return row;
+}
+
+// A tappable row for a labeled time value (Settings > Display > Night
+// mode's Start/End rows): title on the left, the current "HH:MM" value plus
+// a chevron on the right. Unlike build_nav_row(), which has no room for a
+// live value next to the title. Returns the row itself (so the caller can
+// hide/show the whole thing, e.g. while night mode is off) and, via
+// out_value_label, the value label to keep updated (see
+// display_refresh_night_time_values()).
+static lv_obj_t *build_time_value_row(lv_obj_t *parent, const char *title, lv_event_cb_t click_cb,
+                                       lv_obj_t **out_value_label)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_remove_style_all(row);
+    make_plain_container(row);
+    // See build_nav_row()'s comment on LV_OBJ_FLAG_SCROLL_CHAIN.
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLL_CHAIN);
+    lv_obj_set_size(row, LV_PCT(100), TIME_LIST_ROW_HEIGHT_PX);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_left(row, 20, 0);
+    lv_obj_set_style_pad_right(row, 20, 0);
+    lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(row, 1, 0);
+    lv_obj_set_style_border_color(row, COLOR_HAIRLINE, 0);
+    lv_obj_add_event_cb(row, click_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *title_label = lv_label_create(row);
+    lv_obj_set_style_text_color(title_label, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(title_label, &lv_font_montserrat_16, 0);
+    lv_label_set_text(title_label, title);
+
+    lv_obj_t *right = lv_obj_create(row);
+    lv_obj_remove_style_all(right);
+    make_plain_container(right);
+    lv_obj_set_size(right, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(right, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(right, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(right, 10, 0);
+
+    lv_obj_t *value_label = lv_label_create(right);
+    lv_obj_set_style_text_color(value_label, COLOR_MUTED, 0);
+    lv_obj_set_style_text_font(value_label, &lv_font_montserrat_16, 0);
+
+    lv_obj_t *chevron = lv_label_create(right);
+    lv_obj_set_style_text_color(chevron, COLOR_MUTED, 0);
+    lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
+
+    if (out_value_label)
+    {
+        *out_value_label = value_label;
+    }
+    return row;
+}
+
+// A tappable row for a boolean setting (Settings > Display's night-mode
+// row): title on the left, an lv_switch on the right. Unlike
+// build_time_toggle_row()'s checkmark - built for a list of mutually
+// exclusive named options - this reads unambiguously as a single on/off
+// control. Only the switch itself is interactive, not the whole row, so
+// tapping it can't be confused with a navigation tap. Returns the switch so
+// the caller can read/set its checked state.
+static lv_obj_t *build_switch_row(lv_obj_t *parent, const char *title, lv_event_cb_t value_changed_cb)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_remove_style_all(row);
+    make_plain_container(row);
+    lv_obj_set_size(row, LV_PCT(100), TIME_LIST_ROW_HEIGHT_PX);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_left(row, 20, 0);
+    lv_obj_set_style_pad_right(row, 20, 0);
+    lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(row, 1, 0);
+    lv_obj_set_style_border_color(row, COLOR_HAIRLINE, 0);
+
+    lv_obj_t *title_label = lv_label_create(row);
+    lv_obj_set_style_text_color(title_label, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(title_label, &lv_font_montserrat_16, 0);
+    lv_label_set_text(title_label, title);
+
+    lv_obj_t *sw = lv_switch_create(row);
+    style_dark_switch(sw);
+    lv_obj_set_ext_click_area(sw, 10);
+    lv_obj_add_event_cb(sw, value_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    return sw;
 }
 
 // A Time sub-screen's shared skeleton: a plain fixed-height column holding
@@ -3708,6 +3937,12 @@ static void locale_row_click_cb(lv_event_t *e)
     show_settings_view(SETTINGS_VIEW_LOCALE);
 }
 
+static void display_row_click_cb(lv_event_t *e)
+{
+    (void)e;
+    show_settings_view(SETTINGS_VIEW_DISPLAY);
+}
+
 static void watchlist_row_click_cb(lv_event_t *e)
 {
     (void)e;
@@ -3753,6 +3988,11 @@ static void build_settings_list(lv_obj_t *screen)
     // the closest available placeholder, not a dedicated "time" icon.
     s_settings_locale_row_desc =
         build_settings_row(s_settings_list, LV_SYMBOL_SETTINGS, "Time", "--", locale_row_click_cb);
+    // LVGL's built-in symbol set has no sun/brightness glyph either - the
+    // eye icon is the closest available placeholder, same reasoning as the
+    // gear used for "Time" above.
+    s_settings_display_row_desc =
+        build_settings_row(s_settings_list, LV_SYMBOL_EYE_OPEN, "Display", "--", display_row_click_cb);
     s_settings_watchlist_row_desc =
         build_settings_row(s_settings_list, LV_SYMBOL_LIST, "Watchlist symbols", "--", watchlist_row_click_cb);
     s_settings_updates_row_desc =
@@ -4893,6 +5133,259 @@ static void build_locale_screen(lv_obj_t *screen)
     build_nav_row(s_locale_screen, "Region", region_nav_row_click_cb, NULL);
 }
 
+// --- Settings > Display screens ---
+
+static const char *s_night_time_hour_options =
+    "00\n01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23";
+// 5-minute steps, not every minute - keeps the roller short enough to scan
+// at a glance, and a night-mode window doesn't need minute-level precision.
+static const char *s_night_time_minute_options = "00\n05\n10\n15\n20\n25\n30\n35\n40\n45\n50\n55";
+
+static void display_refresh_night_time_values(void)
+{
+    lv_label_set_text_fmt(s_display_night_start_value, "%02u:%02u", s_display.night_start_hour,
+                           s_display.night_start_minute);
+    lv_label_set_text_fmt(s_display_night_end_value, "%02u:%02u", s_display.night_end_hour,
+                           s_display.night_end_minute);
+}
+
+// Clears the dangling static widget handles once the msgbox is actually
+// deleted - fires on every close path (Set, Cancel, or the header's close
+// button all end up calling lv_msgbox_close(), which deletes the object
+// synchronously), so this is the one place that needs to know the msgbox is
+// gone rather than duplicating cleanup in every button handler.
+static void night_time_msgbox_delete_cb(lv_event_t *e)
+{
+    (void)e;
+    s_night_time_msgbox = NULL;
+    s_night_time_hour_roller = NULL;
+    s_night_time_minute_roller = NULL;
+}
+
+// Commits whatever the rollers are currently showing into the field being
+// edited and closes the dialog - there is no separate Cancel gesture,
+// tapping anywhere outside the rollers (the backdrop - see night_time_open())
+// always saves, matching a wheel picker's usual "scroll, then dismiss"
+// interaction instead of requiring an explicit confirm tap.
+static void night_time_commit_and_close(void)
+{
+    uint8_t hour = (uint8_t)lv_roller_get_selected(s_night_time_hour_roller);
+    uint8_t minute = (uint8_t)(lv_roller_get_selected(s_night_time_minute_roller) * 5);
+
+    if (s_night_time_editing_start)
+    {
+        s_display.night_start_hour = hour;
+        s_display.night_start_minute = minute;
+    }
+    else
+    {
+        s_display.night_end_hour = hour;
+        s_display.night_end_minute = minute;
+    }
+    settings_store_save_display(&s_display);
+    display_refresh_night_time_values();
+    display_apply_brightness();
+    lv_msgbox_close(s_night_time_msgbox);
+}
+
+// Only the backdrop itself reaches this handler - a tap on the msgbox card
+// (the rollers) is consumed by that child widget first and never bubbles
+// here, so this fires exactly on "tapped outside the rollers".
+static void night_time_backdrop_click_cb(lv_event_t *e)
+{
+    (void)e;
+    night_time_commit_and_close();
+}
+
+// Opens a modal msgbox with an hour/minute roller pair, preloaded with
+// whichever field (Start or End) was tapped. Built fresh on every open
+// rather than once at init: a full pre-built Settings sub-screen (an
+// earlier design) was more page than two rollers warrant.
+static void night_time_open(bool editing_start)
+{
+    s_night_time_editing_start = editing_start;
+    uint8_t hour = editing_start ? s_display.night_start_hour : s_display.night_end_hour;
+    uint8_t minute = editing_start ? s_display.night_start_minute : s_display.night_end_minute;
+
+    // No title, close button, or footer buttons - this dialog is just two
+    // rollers; tapping the backdrop outside them (wired below) both commits
+    // and dismisses, so there is nothing left for chrome or an explicit
+    // confirm button to do. No card background either: the rollers already
+    // carry their own dark styling, so the dialog just floats directly on
+    // the dimmed backdrop instead of sitting inside a second, redundant panel.
+    s_night_time_msgbox = lv_msgbox_create(NULL);
+    lv_obj_add_event_cb(s_night_time_msgbox, night_time_msgbox_delete_cb, LV_EVENT_DELETE, NULL);
+    lv_obj_set_width(s_night_time_msgbox, 420);
+    lv_obj_set_style_bg_opa(s_night_time_msgbox, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_night_time_msgbox, 0, 0);
+    lv_obj_set_style_text_color(s_night_time_msgbox, COLOR_TEXT, 0);
+
+    // LVGL's default modal backdrop is a light gray - override it to a
+    // dark, mostly-opaque dim instead, matching this screen's palette
+    // rather than clashing with it. It's also the actual "outside the
+    // rollers" tap target: a tap on the msgbox card (the rollers) is
+    // consumed by that child first and never reaches this handler, so this
+    // fires exactly on a tap outside them.
+    lv_obj_t *backdrop = lv_obj_get_parent(s_night_time_msgbox);
+    lv_obj_set_style_bg_color(backdrop, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(backdrop, LV_OPA_80, 0);
+    lv_obj_add_event_cb(backdrop, night_time_backdrop_click_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *content = lv_msgbox_get_content(s_night_time_msgbox);
+    lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
+
+    lv_obj_t *picker = lv_obj_create(content);
+    lv_obj_remove_style_all(picker);
+    make_plain_container(picker);
+    lv_obj_set_size(picker, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(picker, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(picker, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_top(picker, 12, 0);
+    lv_obj_set_style_pad_column(picker, 16, 0);
+
+    s_night_time_hour_roller = lv_roller_create(picker);
+    lv_roller_set_options(s_night_time_hour_roller, s_night_time_hour_options, LV_ROLLER_MODE_NORMAL);
+    lv_obj_set_size(s_night_time_hour_roller, 140, 260);
+    style_dark_roller(s_night_time_hour_roller);
+    lv_roller_set_selected(s_night_time_hour_roller, hour, LV_ANIM_OFF);
+
+    lv_obj_t *colon = lv_label_create(picker);
+    lv_obj_set_style_text_color(colon, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(colon, &lv_font_montserrat_28, 0);
+    lv_label_set_text(colon, ":");
+
+    s_night_time_minute_roller = lv_roller_create(picker);
+    lv_roller_set_options(s_night_time_minute_roller, s_night_time_minute_options, LV_ROLLER_MODE_NORMAL);
+    lv_obj_set_size(s_night_time_minute_roller, 140, 260);
+    style_dark_roller(s_night_time_minute_roller);
+    lv_roller_set_selected(s_night_time_minute_roller, minute / 5, LV_ANIM_OFF);
+}
+
+static void night_start_row_click_cb(lv_event_t *e)
+{
+    (void)e;
+    night_time_open(true);
+}
+
+static void night_end_row_click_cb(lv_event_t *e)
+{
+    (void)e;
+    night_time_open(false);
+}
+
+static void display_brightness_slider_cb(lv_event_t *e)
+{
+    lv_obj_t *slider = lv_event_get_target(e);
+    s_display.brightness_percent = (uint8_t)lv_slider_get_value(slider);
+    lv_label_set_text_fmt(s_display_brightness_value_label, "%u%%", s_display.brightness_percent);
+    settings_store_save_display(&s_display);
+    display_apply_brightness();
+}
+
+// Shows/hides the Start/End rows to match the current night_mode_enabled -
+// there's nothing useful to configure in them while night mode is off.
+static void display_refresh_night_rows_visibility(void)
+{
+    if (s_display.night_mode_enabled)
+    {
+        lv_obj_remove_flag(s_display_night_start_row, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(s_display_night_end_row, LV_OBJ_FLAG_HIDDEN);
+    }
+    else
+    {
+        lv_obj_add_flag(s_display_night_start_row, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_display_night_end_row, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void display_night_switch_cb(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    s_display.night_mode_enabled = lv_obj_has_state(sw, LV_STATE_CHECKED) ? 1 : 0;
+    display_refresh_night_rows_visibility();
+    settings_store_save_display(&s_display);
+    display_apply_brightness();
+}
+
+static void build_display_screen(lv_obj_t *screen)
+{
+    s_display_screen = lv_obj_create(screen);
+    lv_obj_remove_style_all(s_display_screen);
+    make_plain_container(s_display_screen);
+    lv_obj_set_size(s_display_screen, LV_PCT(100), BOARD_JC4880P443C_LCD_V_RES - STATUSBAR_HEIGHT_PX);
+    lv_obj_set_flex_flow(s_display_screen, LV_FLEX_FLOW_COLUMN);
+
+    build_subscreen_header(s_display_screen, "Display", NULL, settings_back_cb);
+
+    // Matches the Wi-Fi screen's "NETWORKS" .section-label heading - a small
+    // uppercase muted heading above a group of controls, not a status banner.
+    lv_obj_t *brightness_label = lv_label_create(s_display_screen);
+    lv_obj_set_style_text_color(brightness_label, lv_color_hex(0x565C67), 0);
+    lv_obj_set_style_text_font(brightness_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_pad_left(brightness_label, 20, 0);
+    lv_obj_set_style_pad_top(brightness_label, 14, 0);
+    lv_obj_set_style_pad_bottom(brightness_label, 6, 0);
+    lv_label_set_text(brightness_label, "BRIGHTNESS");
+
+    lv_obj_t *brightness_row = lv_obj_create(s_display_screen);
+    lv_obj_remove_style_all(brightness_row);
+    make_plain_container(brightness_row);
+    lv_obj_set_size(brightness_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(brightness_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(brightness_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_left(brightness_row, 20, 0);
+    lv_obj_set_style_pad_right(brightness_row, 20, 0);
+    // pad_top gives the slider's knob (it overflows LV_PART_KNOB padding
+    // beyond the 12px track - see style_dark_slider()) room to draw without
+    // being clipped by this row's own bounding box; pad_bottom just spaces
+    // this row from the next section.
+    lv_obj_set_style_pad_top(brightness_row, 10, 0);
+    lv_obj_set_style_pad_bottom(brightness_row, 20, 0);
+    lv_obj_set_style_pad_column(brightness_row, 14, 0);
+
+    s_display_brightness_slider = lv_slider_create(brightness_row);
+    lv_slider_set_range(s_display_brightness_slider, DISPLAY_BRIGHTNESS_MIN_PERCENT, 100);
+    lv_obj_set_flex_grow(s_display_brightness_slider, 1);
+    lv_obj_set_height(s_display_brightness_slider, 12);
+    style_dark_slider(s_display_brightness_slider);
+    lv_obj_add_event_cb(s_display_brightness_slider, display_brightness_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    s_display_brightness_value_label = lv_label_create(brightness_row);
+    lv_obj_set_style_text_color(s_display_brightness_value_label, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(s_display_brightness_value_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_width(s_display_brightness_value_label, 48);
+
+    lv_obj_t *night_label = lv_label_create(s_display_screen);
+    lv_obj_set_style_text_color(night_label, lv_color_hex(0x565C67), 0);
+    lv_obj_set_style_text_font(night_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_pad_left(night_label, 20, 0);
+    lv_obj_set_style_pad_bottom(night_label, 6, 0);
+    lv_label_set_text(night_label, "NIGHT MODE");
+
+    s_display_night_switch = build_switch_row(s_display_screen, "Enable night mode", display_night_switch_cb);
+    s_display_night_start_row =
+        build_time_value_row(s_display_screen, "Start", night_start_row_click_cb, &s_display_night_start_value);
+    s_display_night_end_row =
+        build_time_value_row(s_display_screen, "End", night_end_row_click_cb, &s_display_night_end_value);
+
+    // Initial state, mirroring time_format_refresh_marks()'s call at the end
+    // of build_time_format_screen(): s_display was already loaded by the
+    // time display_ui_render() gets here (see its settings_store_load_display()
+    // call), so these widgets start in sync with the persisted values.
+    lv_slider_set_value(s_display_brightness_slider, s_display.brightness_percent, LV_ANIM_OFF);
+    lv_label_set_text_fmt(s_display_brightness_value_label, "%u%%", s_display.brightness_percent);
+    if (s_display.night_mode_enabled)
+    {
+        lv_obj_add_state(s_display_night_switch, LV_STATE_CHECKED);
+    }
+    else
+    {
+        lv_obj_remove_state(s_display_night_switch, LV_STATE_CHECKED);
+    }
+    display_refresh_night_rows_visibility();
+    display_refresh_night_time_values();
+}
+
 // Persists the running firmware version as acknowledged, then switches to
 // the dashboard and tears down the now-inactive disclaimer screen - the
 // only way off this screen (no back/skip control).
@@ -5010,6 +5503,8 @@ static void display_ui_render(void)
     lv_obj_set_flex_flow(s_rows_container, LV_FLEX_FLOW_COLUMN);
 
     settings_store_load_locale(&s_locale); // the Time screens below need it for their initial checkmarks
+    settings_store_load_display(&s_display); // the Display screen below needs it for its initial slider/checks
+    display_apply_brightness(); // correct the full-duty board_jc4880p443c_backlight_on() from display_ui_start()
 
     build_settings_list(screen);
     build_locale_screen(screen);
@@ -5018,6 +5513,7 @@ static void display_ui_render(void)
     build_time_zone_screen(screen);
     build_time_zone_city_screen(screen);
     build_region_screen(screen);
+    build_display_screen(screen);
     build_wifi_screen(screen);
     build_wifi_password_screen(screen);
     build_watchlist_manage_screen(screen);
@@ -5216,6 +5712,16 @@ static int cmd_nav(int argc, char **argv)
         set_active_screen(DISPLAY_UI_SCREEN_SETTINGS);
         show_settings_view(SETTINGS_VIEW_REGION);
     }
+    else if (strcmp(target, "display") == 0)
+    {
+        set_active_screen(DISPLAY_UI_SCREEN_SETTINGS);
+        show_settings_view(SETTINGS_VIEW_DISPLAY);
+    }
+    else if (strcmp(target, "night_time") == 0)
+    {
+        set_active_screen(DISPLAY_UI_SCREEN_SETTINGS);
+        night_time_open(true); // same entry point Start's row tap uses
+    }
     else
     {
         board_jc4880p443c_display_unlock();
@@ -5234,7 +5740,7 @@ esp_err_t display_ui_register_dev_nav_console(void)
         .command = "nav",
         .help = "Jump directly to a screen: watchlist | settings | wifi | wifi_password [ssid] | "
                 "watchlist_manage | watchlist_add | time | time_format | date_format | time_zones | "
-                "time_zone_cities [zone] (dev builds only)",
+                "time_zone_cities [zone] | region | display | night_time (dev builds only)",
         .hint = NULL,
         .func = &cmd_nav,
     };
