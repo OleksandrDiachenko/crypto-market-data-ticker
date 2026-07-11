@@ -3787,6 +3787,8 @@ typedef enum {
     TZ_P_CLST3,
     TZ_P_FKT3,
     TZ_P_WGT_WGST,
+    TZ_P_CHST, // Guam / Northern Mariana Islands, no DST
+    TZ_P_SST,  // American Samoa, no DST
 } tz_posix_id_t;
 
 static const char *const s_tz_posix_strings[] = {
@@ -3877,6 +3879,8 @@ static const char *const s_tz_posix_strings[] = {
     [TZ_P_CLST3] = "CLST3",
     [TZ_P_FKT3] = "FKT3",
     [TZ_P_WGT_WGST] = "WGT3WGST,M3.5.0/22,M10.5.0/23",
+    [TZ_P_CHST] = "ChST-10",
+    [TZ_P_SST] = "SST11",
 };
 
 typedef enum {
@@ -4025,7 +4029,11 @@ typedef enum {
     TZ_C_YEREVAN,
     TZ_C_ZAGREB,
     TZ_C_ZURICH,
-    TZ_C_GUATEMALA
+    TZ_C_GUATEMALA,
+    TZ_C_GUAM,
+    TZ_C_ST_THOMAS,
+    TZ_C_PAGO_PAGO,
+    TZ_C_SAIPAN
 } tz_city_id_t;
 
 static const char *const s_tz_city_names[] = {
@@ -4175,6 +4183,10 @@ static const char *const s_tz_city_names[] = {
     [TZ_C_ZAGREB] = "Zagreb",
     [TZ_C_ZURICH] = "Zurich",
     [TZ_C_GUATEMALA] = "Guatemala",
+    [TZ_C_GUAM] = "Guam",
+    [TZ_C_ST_THOMAS] = "St Thomas",
+    [TZ_C_PAGO_PAGO] = "Pago Pago",
+    [TZ_C_SAIPAN] = "Saipan",
 };
 
 typedef struct
@@ -4325,6 +4337,10 @@ static tz_entry_t s_timezones[] = {
     TZROW(TZ_ZONE_AMERICA, TZ_C_ST_JOHNS, TZ_P_NST_NDT),
     TZROW(TZ_ZONE_PACIFIC, TZ_C_HONOLULU, TZ_P_HST),
     TZROW(TZ_ZONE_AMERICA, TZ_C_SAN_JUAN, TZ_P_AST_NO_DST),
+    TZROW(TZ_ZONE_AMERICA, TZ_C_ST_THOMAS, TZ_P_AST_NO_DST),
+    TZROW(TZ_ZONE_PACIFIC, TZ_C_GUAM, TZ_P_CHST),
+    TZROW(TZ_ZONE_PACIFIC, TZ_C_SAIPAN, TZ_P_CHST),
+    TZROW(TZ_ZONE_PACIFIC, TZ_C_PAGO_PAGO, TZ_P_SST),
     TZROW(TZ_ZONE_AMERICA, TZ_C_HAVANA, TZ_P_CST5CDT_CUBA),
 
     // Central / South America
