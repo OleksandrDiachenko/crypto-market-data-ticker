@@ -12,7 +12,9 @@ Build an ESP-IDF based ESP32-P4 market data terminal as a professional embedded 
 - Phase 12 done: host-side tests were already comprehensive going in;
   added CI static analysis (cppcheck blocking, clang-format report-only)
   and a documented host-testable-module audit
-- Phase 13 (regional server auto-selection) not started
+- Phase 13 done: API region (Binance.com/.US) is now auto-derived from the
+  selected time zone, with a manual override that survives later time-zone
+  edits; a region switch forces a full resync + WS reconnect
 - Phase 14 (branding, licensing & Binance data-usage compliance) not started
 - Phase 15 (portfolio polish, renumbered from 13) not started
 
@@ -357,7 +359,7 @@ Acceptance criteria:
   for this phase, candidate for a future `chore/*` slice
 
 ### Phase 13: Regional server auto-selection
-Status: Planned
+Status: Done
 
 Scope: derive the Binance REST/WS host from the user's selected time zone
 instead of relying on a manual region toggle - pick Binance.US
@@ -390,20 +392,39 @@ Open design questions (to resolve in the ADR before coding):
   path as the Phase 8/9 resync), since the underlying host changed.
 
 Acceptance criteria:
-- [ ] ADR documenting the U.S.-territory `tz_label` allow-list, the
-      auto/manual region-source flag, and the resync-on-switch behavior
-- [ ] Region is auto-selected from the selected time zone (U.S. zone ->
-      `SETTINGS_API_REGION_US`, otherwise `SETTINGS_API_REGION_INTL`)
-- [ ] Manual override is preserved across subsequent time-zone edits
-      (region-source flag), host-tested
-- [ ] Switching region forces a resync + WS resubscribe; no stale data from
-      the previous host
-- [ ] Symbols unavailable on the active region surface a visible per-symbol
-      state, not a silent gap
-- [ ] Host tests cover the tz_label -> region mapping (U.S. states,
-      territories, and non-U.S. `America/*` negatives)
-- [ ] Validated on real hardware: pick a U.S. zone -> data comes from
-      Binance.US; pick a non-U.S. zone -> data comes from Binance.com
+- [x] ADR documenting the U.S.-territory `tz_label` allow-list, the
+      auto/manual region-source flag, and the resync-on-switch behavior -
+      see [0009](decisions/0009-regional-server-auto-selection.md)
+- [x] Region is auto-selected from the selected time zone (U.S. zone ->
+      `SETTINGS_API_REGION_US`, otherwise `SETTINGS_API_REGION_INTL`) -
+      `settings_api_region_from_tz_label()`
+      (`components/settings_store/src/settings_api_region_map.c`), wired
+      into `time_zone_city_row_click_cb()` in `main/display_ui.c`; also
+      closed the tz table's U.S.-territory gap (added Guam, USVI, American
+      Samoa, Northern Mariana Islands) so the allow-list actually covers
+      all five territories the roadmap names
+- [x] Manual override is preserved across subsequent time-zone edits
+      (region-source flag), host-tested - `region_source`
+      (`SETTINGS_API_REGION_SOURCE_AUTO`/`_MANUAL`) in
+      `api_region_settings_t`; new `Settings > Time > Region` screen
+      (Automatic/International/United States)
+- [x] Switching region forces a resync + WS resubscribe; no stale data from
+      the previous host - `app_state_sync_task_force_resync()` +
+      `APP_STATE_REGION_CHANGED` event consumed by `app_state_ws_task`'s
+      stop/recreate/reconnect path; hardware validation caught and fixed a
+      real race (a force-resync request arriving mid-fetch was silently
+      dropped) - see
+      `docs/validation/regional-server-auto-selection-hardware-test.md`
+- [x] Symbols unavailable on the active region surface a visible per-symbol
+      state, not a silent gap - reuses Phase 8's existing
+      `MARKET_DATA_ERR_SYMBOL_NOT_FOUND` -> `APP_STATE_SYMBOL_ERROR` ->
+      `"Unavailable"` rendering; no new state/error code needed
+- [x] Host tests cover the tz_label -> region mapping (U.S. states,
+      territories, and non-U.S. `America/*` negatives) - 30 checks in
+      `components/settings_store/host_test/test_settings_api_region_map.c`
+- [x] Validated on real hardware: pick a U.S. zone -> data comes from
+      Binance.US; pick a non-U.S. zone -> data comes from Binance.com - see
+      `docs/validation/regional-server-auto-selection-hardware-test.md`
 
 ### Phase 14: Branding, licensing & data-usage compliance
 Status: Planned
