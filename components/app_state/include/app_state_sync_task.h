@@ -24,6 +24,14 @@ extern "C" {
 // tolerates all three being not-yet-connected/synced and just waits.
 esp_err_t app_state_sync_task_start(void);
 
+// Forces every non-ERROR watchlist symbol to be re-fetched on the sync
+// task's next 2s cycle - the same path a post-reconnect gap resync uses
+// (see RESYNC_GAP_MS in app_state_sync_task.c). Called by display_ui.c
+// after an API region switch, since the underlying host changed and any
+// existing klines history came from the old one - see
+// docs/decisions/0009-regional-server-auto-selection.md.
+void app_state_sync_task_force_resync(void);
+
 #ifdef __cplusplus
 }
 #endif

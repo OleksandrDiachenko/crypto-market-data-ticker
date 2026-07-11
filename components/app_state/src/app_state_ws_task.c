@@ -53,13 +53,15 @@ static void wait_for_wifi_connected(void)
     }
 }
 
-static void ws_task_fn(void *arg)
+// Creates the client for the current watchlist, joins its update queue to
+// queue_set (if non-NULL), and connects - the same create -> join-to-set ->
+// connect ordering used at task start (see ws_task_fn()'s own doc comment
+// on why that order matters), reused here so a region switch can rebuild
+// the connection against the new host without racing the heap-corruption
+// bug. Returns the new update queue, or NULL on failure.
+static QueueHandle_t start_ws_client(QueueSetHandle_t queue_set)
 {
-    (void)arg;
     uint8_t count = app_state_symbol_count();
-
-    wait_for_wifi_connected();
-
     char symbol_storage[APP_STATE_MAX_SYMBOLS][SETTINGS_SYMBOL_MAX_LEN + 1];
     const char *symbols[APP_STATE_MAX_SYMBOLS];
     for (uint8_t i = 0; i < count; i++)
@@ -73,44 +75,56 @@ static void ws_task_fn(void *arg)
     esp_err_t err = market_data_ws_client_create(symbols, count);
     if (err != ESP_OK)
     {
-        ESP_LOGW(TAG, "market_data_ws_client_create failed: %s; WS consumer task exiting", esp_err_to_name(err));
-        vTaskDelete(NULL);
-        return;
+        ESP_LOGW(TAG, "market_data_ws_client_create failed: %s", esp_err_to_name(err));
+        return NULL;
     }
 
-    // Sole consumer of this queue by design - market_data_kline_update_t is
-    // a point-to-point FreeRTOS queue, not a broadcast (same reasoning as
-    // app_state_sync_task.c's use of wifi_manager_get_event_queue()). Safe
-    // to join to a queue set now, before market_data_ws_client_connect(),
-    // while it's still guaranteed empty - see market_data_ws_client_create()
-    // and market_data_ws_client_connect()'s doc comments.
     QueueHandle_t updates = market_data_ws_client_get_update_queue();
     if (updates == NULL)
     {
-        ESP_LOGW(TAG, "No update queue available; WS consumer task exiting");
-        vTaskDelete(NULL);
-        return;
+        ESP_LOGE(TAG, "No update queue after create");
+        return NULL;
     }
+    if (queue_set != NULL && xQueueAddToSet(updates, queue_set) != pdPASS)
+    {
+        ESP_LOGE(TAG, "Failed to join update queue to the queue set");
+        return NULL;
+    }
+
+    err = market_data_ws_client_connect();
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "market_data_ws_client_connect failed: %s", esp_err_to_name(err));
+        if (queue_set != NULL)
+        {
+            xQueueRemoveFromSet(updates, queue_set);
+        }
+        return NULL;
+    }
+    return updates;
+}
+
+static void ws_task_fn(void *arg)
+{
+    (void)arg;
+
+    wait_for_wifi_connected();
 
     // Also sole consumer of this one - see its own doc comment. A queue
     // set lets this task block on whichever of the two fires first instead
     // of picking one to poll and the other to block on.
     QueueHandle_t watchlist_events = app_state_get_watchlist_event_queue();
     QueueSetHandle_t queue_set = xQueueCreateSet(MARKET_DATA_WS_UPDATE_QUEUE_LEN + APP_STATE_WATCHLIST_EVENT_QUEUE_LEN);
-    if (queue_set == NULL || watchlist_events == NULL || xQueueAddToSet(updates, queue_set) != pdPASS ||
-        xQueueAddToSet(watchlist_events, queue_set) != pdPASS)
+    if (queue_set == NULL || watchlist_events == NULL || xQueueAddToSet(watchlist_events, queue_set) != pdPASS)
     {
         ESP_LOGE(TAG, "Queue set setup failed; watchlist edits won't live-resubscribe until reboot");
         queue_set = NULL;
     }
 
-    // Only now can WEBSOCKET_EVENT_DATA start populating `updates` - if the
-    // queue set setup above succeeded, it's already a member, so no tick
-    // can be missed.
-    err = market_data_ws_client_connect();
-    if (err != ESP_OK)
+    QueueHandle_t updates = start_ws_client(queue_set);
+    if (updates == NULL)
     {
-        ESP_LOGW(TAG, "market_data_ws_client_connect failed: %s; WS consumer task exiting", esp_err_to_name(err));
+        ESP_LOGW(TAG, "WS client start failed; WS consumer task exiting");
         vTaskDelete(NULL);
         return;
     }
@@ -153,9 +167,26 @@ static void ws_task_fn(void *arg)
                 {
                     market_data_ws_client_subscribe(watchlist_event.symbol);
                 }
-                else
+                else if (watchlist_event.kind == APP_STATE_WATCHLIST_SYMBOL_REMOVED)
                 {
                     market_data_ws_client_unsubscribe(watchlist_event.symbol);
+                }
+                else // APP_STATE_REGION_CHANGED
+                {
+                    ESP_LOGI(TAG, "API region changed; reconnecting WS client against the new host");
+                    xQueueRemoveFromSet(updates, queue_set);
+                    market_data_ws_client_stop();
+                    QueueHandle_t new_updates = start_ws_client(queue_set);
+                    if (new_updates == NULL)
+                    {
+                        // The old client/queue are already destroyed - nothing
+                        // left to safely fall back to, unlike the boot-time
+                        // failure path's plain-queue option.
+                        ESP_LOGE(TAG, "Failed to reconnect WS client after region change; WS consumer task exiting");
+                        vTaskDelete(NULL);
+                        return;
+                    }
+                    updates = new_updates;
                 }
             }
         }

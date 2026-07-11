@@ -51,8 +51,10 @@ esp_err_t market_data_ws_client_connect(void);
 // the update queue to a queue set before data can arrive.
 esp_err_t market_data_ws_client_start(const char *const *symbols, uint8_t symbol_count);
 
-// Stops and destroys the underlying client and its queue. Not currently
-// called anywhere - exposed for symmetry and future use.
+// Stops and destroys the underlying client and its queue. Called by
+// components/app_state/src/app_state_ws_task.c to rebuild the connection
+// against a new region's host after an API region switch - see
+// docs/decisions/0009-regional-server-auto-selection.md.
 void market_data_ws_client_stop(void);
 
 // Sole consumer: components/app_state/src/app_state_ws_task.c. Returns NULL

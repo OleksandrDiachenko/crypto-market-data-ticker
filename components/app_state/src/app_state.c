@@ -49,6 +49,11 @@ QueueHandle_t app_state_get_watchlist_event_queue(void)
     return s_watchlist_event_queue;
 }
 
+void app_state_notify_region_changed(void)
+{
+    push_watchlist_event(APP_STATE_REGION_CHANGED, "");
+}
+
 esp_err_t app_state_init(void)
 {
     s_lock = xSemaphoreCreateMutex();

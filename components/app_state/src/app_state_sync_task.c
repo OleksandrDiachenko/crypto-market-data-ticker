@@ -70,7 +70,7 @@ static void handle_wifi_event(const wifi_manager_event_t *evt)
 // symbol when a post-reconnect resync was forced. Symbols in
 // APP_STATE_SYMBOL_ERROR (unrecoverable) are never included here - only a
 // watchlist change (out of scope for this task) can move them forward.
-static uint8_t collect_due_indices(uint8_t count, uint8_t *out_indices)
+static uint8_t collect_due_indices(uint8_t count, uint8_t *out_indices, bool forced)
 {
     uint8_t n = 0;
     int64_t t = now_ms();
@@ -83,7 +83,7 @@ static uint8_t collect_due_indices(uint8_t count, uint8_t *out_indices)
         }
 
         bool due = false;
-        if (s_force_resync_all)
+        if (forced)
         {
             due = (meta.state != APP_STATE_SYMBOL_ERROR);
         }
@@ -111,8 +111,18 @@ static void run_due_fetches(uint8_t count, market_data_kline_t *const *scratch)
         return;
     }
 
+    // Snapshot-and-clear right away, not after the (possibly slow, blocking)
+    // batch HTTP call below - a new force-resync request that arrives while
+    // this fetch is still in flight must not be silently dropped by an
+    // unconditional clear once this fetch finishes (found during Phase 13's
+    // hardware validation: two region switches in quick succession lost the
+    // second one this way) - see
+    // docs/decisions/0009-regional-server-auto-selection.md.
+    bool forced = s_force_resync_all;
+    s_force_resync_all = false;
+
     uint8_t due_indices[APP_STATE_MAX_SYMBOLS];
-    uint8_t due_count = collect_due_indices(count, due_indices);
+    uint8_t due_count = collect_due_indices(count, due_indices, forced);
     if (due_count == 0)
     {
         return;
@@ -138,7 +148,12 @@ static void run_due_fetches(uint8_t count, market_data_kline_t *const *scratch)
     {
         // NOT_SYNCED (race with the check above) or bad args - nothing to
         // record, every symbol stays exactly as it was and gets retried
-        // next cycle.
+        // next cycle. Restore a consumed force-resync request so a forced
+        // full resync isn't silently downgraded to a plain per-symbol retry.
+        if (forced)
+        {
+            s_force_resync_all = true;
+        }
         ESP_LOGW(TAG, "Batch fetch did not run: %d", (int)err);
         return;
     }
@@ -172,11 +187,6 @@ static void run_due_fetches(uint8_t count, market_data_kline_t *const *scratch)
                           (int)results[i].err);
             }
         }
-    }
-
-    if (s_force_resync_all)
-    {
-        s_force_resync_all = false;
     }
 }
 
@@ -235,4 +245,9 @@ esp_err_t app_state_sync_task_start(void)
 {
     BaseType_t ok = xTaskCreate(sync_task_fn, "app_state_sync", SYNC_TASK_STACK_SIZE, NULL, SYNC_TASK_PRIORITY, NULL);
     return (ok == pdPASS) ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+void app_state_sync_task_force_resync(void)
+{
+    s_force_resync_all = true;
 }
