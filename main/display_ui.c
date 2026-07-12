@@ -509,13 +509,13 @@ static void build_row(uint8_t index)
     lv_obj_set_style_text_color(row->range_label, COLOR_MUTED, 0);
     lv_obj_set_style_text_font(row->range_label, &lv_font_montserrat_14, 0);
     // Fixed width so the label never bleeds into the chart column. The text
-    // itself is always composed as an explicit two-line "L <lo>\nH <hi>"
+    // itself is always composed as an explicit two-line "H <hi>\nL <lo>"
     // (see update_row()), so every row's range label is the same height
     // regardless of how many decimals a symbol needs - LONG_DOT is just a
     // defensive fallback in case a single line is ever wider than this column.
     lv_obj_set_width(row->range_label, ROW_SIDE_COL_WIDTH_PX);
     lv_label_set_long_mode(row->range_label, LV_LABEL_LONG_DOT);
-    lv_label_set_text(row->range_label, "L --\nH --");
+    lv_label_set_text(row->range_label, "H --\nL --");
 
     // Middle: sparkline.
     row->chart = lv_chart_create(row->row);
@@ -601,7 +601,7 @@ static void update_row(uint8_t index)
     {
         // Never synced yet (INIT), or DEGRADED before a first sync ever
         // succeeded - nothing to compute a price/range/chart from.
-        lv_label_set_text(row->range_label, "L --\nH --");
+        lv_label_set_text(row->range_label, "H --\nL --");
         lv_label_set_text(row->price_label, "");
         lv_obj_set_style_text_color(row->change_label, COLOR_MUTED, 0);
         lv_label_set_text(row->change_label, meta.state == APP_STATE_SYMBOL_DEGRADED ? "Resyncing..." : "Loading...");
@@ -637,8 +637,8 @@ static void update_row(uint8_t index)
     char price_buf[24];
     char hi_buf[24];
     char lo_buf[24];
-    // Explicit "L <lo>\nH <hi>" - always two lines, low-to-high order with
-    // letter labels so the reading direction never needs to be memorized.
+    // Explicit "H <hi>\nL <lo>" - always two lines, High-over-Low to match
+    // OHLC convention and the candlestick chart (high sits above low).
     // An embedded newline (rather than a single "hi / lo" line left to
     // LVGL's auto-wrap) guarantees the break always falls between the two
     // values instead of mid-digit, and keeps every row the same height.
@@ -647,7 +647,7 @@ static void update_row(uint8_t index)
     display_format_price(last_close, price_buf, sizeof(price_buf));
     display_format_price(hi, hi_buf, sizeof(hi_buf));
     display_format_price(lo, lo_buf, sizeof(lo_buf));
-    snprintf(range_buf, sizeof(range_buf), "L %s\nH %s", lo_buf, hi_buf);
+    snprintf(range_buf, sizeof(range_buf), "H %s\nL %s", hi_buf, lo_buf);
     snprintf(change_buf, sizeof(change_buf), "%+.2f%%", change_pct);
 
     lv_label_set_text(row->range_label, range_buf);
@@ -3403,14 +3403,14 @@ static void watchlist_add_check_cb(lv_event_t *e)
         char price_buf[24];
         char hi_buf[24];
         char lo_buf[24];
-        // Same "L <lo>\nH <hi>" style as the watchlist row - see the comment
+        // Same "H <hi>\nL <lo>" style as the watchlist row - see the comment
         // at that call site in update_row().
         char range_buf[2 * sizeof(hi_buf) + 8];
         char change_buf[16];
         display_format_price(ticker.last_price, price_buf, sizeof(price_buf));
         display_format_price(ticker.high_price, hi_buf, sizeof(hi_buf));
         display_format_price(ticker.low_price, lo_buf, sizeof(lo_buf));
-        snprintf(range_buf, sizeof(range_buf), "L %s\nH %s", lo_buf, hi_buf);
+        snprintf(range_buf, sizeof(range_buf), "H %s\nL %s", hi_buf, lo_buf);
         snprintf(change_buf, sizeof(change_buf), "%+.2f%%", ticker.price_change_percent);
 
         lv_label_set_text(s_watchlist_match_last_price_label, price_buf);
@@ -5678,8 +5678,6 @@ esp_err_t display_ui_start(void)
     lv_indev_t *touch_indev = NULL;
     ESP_RETURN_ON_ERROR(board_jc4880p443c_touch_start(display, &touch_indev), TAG, "start touch");
 
-    ESP_RETURN_ON_ERROR(board_jc4880p443c_backlight_on(), TAG, "turn on backlight");
-
     if (!board_jc4880p443c_display_lock(0))
     {
         ESP_LOGE(TAG, "failed to acquire LVGL lock");
@@ -5687,6 +5685,24 @@ esp_err_t display_ui_start(void)
     }
     display_ui_render();
     board_jc4880p443c_display_unlock();
+
+    // Backlight only turns on now, after the real dashboard has been built
+    // and unlocked for esp_lvgl_port's background task to flush - not
+    // before. The ST7701 panel is already logically "on" (its own init
+    // command sequence includes a display-on command) the moment
+    // board_jc4880p443c_display_start() above returns, and esp_lvgl_port's
+    // background task can flush LVGL's default (light-themed) screen the
+    // instant the display is registered - both well before
+    // display_ui_render() gets a chance to build anything. Turning the
+    // backlight on this late means the user only ever sees the real, dark,
+    // populated dashboard - not a flash of the light default theme, nor a
+    // half-built screen while display_ui_render() is still working. Note
+    // display_ui_render() building all 16 Settings/dashboard screens up
+    // front is itself slow (multiple seconds) since the LVGL object pool
+    // moved to PSRAM (see sdkconfig.defaults' CONFIG_LV_MEM_SIZE_KILOBYTES
+    // comment) - this fix removes the white/light flash during that window,
+    // it does not shorten the window itself.
+    ESP_RETURN_ON_ERROR(board_jc4880p443c_backlight_on(), TAG, "turn on backlight");
 
     ESP_LOGI(TAG, "Display UI started.");
     return ESP_OK;
