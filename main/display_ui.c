@@ -5678,8 +5678,6 @@ esp_err_t display_ui_start(void)
     lv_indev_t *touch_indev = NULL;
     ESP_RETURN_ON_ERROR(board_jc4880p443c_touch_start(display, &touch_indev), TAG, "start touch");
 
-    ESP_RETURN_ON_ERROR(board_jc4880p443c_backlight_on(), TAG, "turn on backlight");
-
     if (!board_jc4880p443c_display_lock(0))
     {
         ESP_LOGE(TAG, "failed to acquire LVGL lock");
@@ -5687,6 +5685,24 @@ esp_err_t display_ui_start(void)
     }
     display_ui_render();
     board_jc4880p443c_display_unlock();
+
+    // Backlight only turns on now, after the real dashboard has been built
+    // and unlocked for esp_lvgl_port's background task to flush - not
+    // before. The ST7701 panel is already logically "on" (its own init
+    // command sequence includes a display-on command) the moment
+    // board_jc4880p443c_display_start() above returns, and esp_lvgl_port's
+    // background task can flush LVGL's default (light-themed) screen the
+    // instant the display is registered - both well before
+    // display_ui_render() gets a chance to build anything. Turning the
+    // backlight on this late means the user only ever sees the real, dark,
+    // populated dashboard - not a flash of the light default theme, nor a
+    // half-built screen while display_ui_render() is still working. Note
+    // display_ui_render() building all 16 Settings/dashboard screens up
+    // front is itself slow (multiple seconds) since the LVGL object pool
+    // moved to PSRAM (see sdkconfig.defaults' CONFIG_LV_MEM_SIZE_KILOBYTES
+    // comment) - this fix removes the white/light flash during that window,
+    // it does not shorten the window itself.
+    ESP_RETURN_ON_ERROR(board_jc4880p443c_backlight_on(), TAG, "turn on backlight");
 
     ESP_LOGI(TAG, "Display UI started.");
     return ESP_OK;
