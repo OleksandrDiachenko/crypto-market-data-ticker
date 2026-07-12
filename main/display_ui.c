@@ -1020,6 +1020,46 @@ static void update_timer_cb(lv_timer_t *timer)
     }
 }
 
+// Per-side hit-test padding (px). lv_obj_set_ext_click_area() alone can
+// only grow a button's tap target by the same amount on all four sides,
+// which would grow straight into whatever's flush against a button's edge
+// (a settings row below the back arrow, the watchlist/settings list above
+// the nav button). Paired with LV_OBJ_FLAG_ADV_HITTEST and
+// asymmetric_hit_test_cb(), this instead grows generously on sides that
+// have empty space next to them and not at all on sides that don't, so the
+// bigger target never steals taps meant for a neighboring element. Needs
+// CONFIG_LV_USE_PRIVATE_API (see sdkconfig.defaults) - without it,
+// lv_hit_test_info_t's fields aren't visible outside LVGL itself.
+typedef struct
+{
+    int32_t top;
+    int32_t right;
+    int32_t bottom;
+    int32_t left;
+} hit_test_pad_t;
+
+// LV_EVENT_HIT_TEST handler: only invoked (per lv_obj_hit_test()) once a tap
+// already falls inside the coarse box set by lv_obj_set_ext_click_area(),
+// so that call must be sized to at least the largest of the four paddings
+// below - this callback then narrows the accepted area per side using the
+// exact numbers a caller passed as event user_data.
+static void asymmetric_hit_test_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target(e);
+    const hit_test_pad_t *pad = (const hit_test_pad_t *)lv_event_get_user_data(e);
+    lv_hit_test_info_t *info = lv_event_get_hit_test_info(e);
+
+    lv_area_t a;
+    lv_obj_get_coords(obj, &a);
+    a.x1 -= pad->left;
+    a.x2 += pad->right;
+    a.y1 -= pad->top;
+    a.y2 += pad->bottom;
+
+    info->res = (info->point->x >= a.x1 && info->point->x <= a.x2 && info->point->y >= a.y1 &&
+                 info->point->y <= a.y2);
+}
+
 // Same 4-bar signal glyph as build_signal_icon() (see the Wi-Fi list rows,
 // below) but keeps a pointer to each bar in s_statusbar_signal_bars so
 // update_statusbar() can recolor them in place instead of rebuilding the
@@ -1119,18 +1159,28 @@ static void build_statusbar(lv_obj_t *screen)
     // too.
     lv_obj_set_height(nav_btn, STATUSBAR_HEIGHT_PX);
     lv_obj_set_flex_flow(nav_btn, LV_FLEX_FLOW_ROW);
-    // Right-aligned (not centered): with a fixed width below, this pins the
-    // label to the button's right edge so SETTINGS/EXIT stay flush with the
-    // bar's pad_right - same margin the clock label has from pad_left -
-    // regardless of which (differently-sized) text is showing.
-    lv_obj_set_flex_align(nav_btn, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    // Centered: with a fixed width below (same for both SETTINGS/EXIT), this
+    // keeps the label centered on the button regardless of which
+    // (differently-sized) text is showing, instead of pinned to one edge.
+    lv_obj_set_flex_align(nav_btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     // A label-sized hit target is as hard to tap as a hyperlink - pad the
-    // button past its text, then extend the touch-sensitive area further
-    // still, without changing how big it looks.
+    // button past its text on both sides (symmetric, so centering above
+    // stays true), then extend the touch-sensitive area further still,
+    // without changing how big it looks.
     lv_obj_set_style_pad_top(nav_btn, 4, 0);
     lv_obj_set_style_pad_bottom(nav_btn, 4, 0);
     lv_obj_set_style_pad_left(nav_btn, 10, 0);
-    lv_obj_set_ext_click_area(nav_btn, 16);
+    lv_obj_set_style_pad_right(nav_btn, 10, 0);
+    // The button sits flush against the watchlist/settings content above it
+    // (0px gap) but has open space to its right/below (screen edge) and a
+    // 16px gap to the signal icon on its left - so the tap target is grown
+    // asymmetrically: none upward (would steal taps from whatever list row
+    // is directly above), generously the other three sides. 20 here is just
+    // the coarse outer bound asymmetric_hit_test_cb() then narrows per side.
+    static const hit_test_pad_t s_nav_btn_hit_pad = {.top = 0, .right = 20, .bottom = 20, .left = 14};
+    lv_obj_add_flag(nav_btn, LV_OBJ_FLAG_ADV_HITTEST);
+    lv_obj_set_ext_click_area(nav_btn, 20);
+    lv_obj_add_event_cb(nav_btn, asymmetric_hit_test_cb, LV_EVENT_HIT_TEST, (void *)&s_nav_btn_hit_pad);
     // Fixed width sized to the wider of "SETTINGS"/"EXIT" (plus the tap-area
     // padding above) - not content-fitting. Swapping between the two texts
     // must not resize the button, since that would also shift the signal
@@ -1141,7 +1191,7 @@ static void build_statusbar(lv_obj_t *screen)
     lv_text_get_size(&settings_sz, "SETTINGS", &lv_font_montserrat_14, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
     lv_text_get_size(&exit_sz, "EXIT", &lv_font_montserrat_14, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
     int32_t nav_label_w = settings_sz.x > exit_sz.x ? settings_sz.x : exit_sz.x;
-    lv_obj_set_width(nav_btn, nav_label_w + 10 /* pad_left above */);
+    lv_obj_set_width(nav_btn, nav_label_w + 20 /* pad_left + pad_right above */);
     lv_obj_add_event_cb(nav_btn, nav_click_cb, LV_EVENT_CLICKED, NULL);
     s_nav_label = lv_label_create(nav_btn);
     // Muted, not accent - this is secondary nav text (matches the mockup's
@@ -1343,7 +1393,16 @@ static lv_obj_t *build_subscreen_header(lv_obj_t *parent, const char *title, con
     lv_obj_set_size(back_btn, 40, 40);
     lv_obj_set_flex_flow(back_btn, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(back_btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_ext_click_area(back_btn, 10);
+    // Grown asymmetrically (see hit_test_pad_t/asymmetric_hit_test_cb): up
+    // to the header's own top/bottom edges (12px - the header is 64px tall,
+    // this 40px button is centered in it, so that's the full margin without
+    // reaching the settings row just below the header's bottom border) and
+    // generously to the left (screen edge, nothing there). Right is capped
+    // at 10 - the exact gap to the title label - so it never overlaps text.
+    static const hit_test_pad_t s_back_btn_hit_pad = {.top = 12, .right = 10, .bottom = 12, .left = 20};
+    lv_obj_add_flag(back_btn, LV_OBJ_FLAG_ADV_HITTEST);
+    lv_obj_set_ext_click_area(back_btn, 20);
+    lv_obj_add_event_cb(back_btn, asymmetric_hit_test_cb, LV_EVENT_HIT_TEST, (void *)&s_back_btn_hit_pad);
     lv_obj_add_event_cb(back_btn, back_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *back_icon = lv_label_create(back_btn);

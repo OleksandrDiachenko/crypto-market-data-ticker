@@ -122,3 +122,9 @@ CONFIG_LV_FONT_MONTSERRAT_28=y
 # surrounding system-level internal heap at the time, so this is well within
 # budget) - see docs/debugging/watchlist-add-freeze.md.
 CONFIG_LV_MEM_SIZE_KILOBYTES=128
+
+# Needed for LV_EVENT_HIT_TEST (display_ui.c's asymmetric_hit_test_cb()):
+# without it, lv_hit_test_info_t is only forward-declared and its `point`/
+# `res` fields are unreachable from app code, even though the public
+# lv_event_get_hit_test_info() accessor itself still compiles fine.
+CONFIG_LV_USE_PRIVATE_API=y
