@@ -20,6 +20,10 @@
 #include "esp_console.h"
 #endif
 
+// ui_mem_collect() (see its definition) always needs this, regardless of
+// CONFIG_UI_DIAGNOSTICS - the dev console's "memlog" command uses it too.
+#include "esp_heap_caps.h"
+
 #include <ctype.h>
 #include <math.h>
 #include <stdint.h>
@@ -333,6 +337,83 @@ static lv_obj_t *s_updates_action_label;
 // --- About (Settings > About) ---
 
 static lv_obj_t *s_about_screen;
+
+// LVGL pool / internal-RAM / PSRAM headroom plus UI-side context, so a
+// hardware run can be correlated against the worst-case scenarios from
+// docs/debugging/wifi-nav-pool-exhaustion.md without needing a debugger.
+// Internal and PSRAM are measured with two separate heap_caps_get_*() calls,
+// not one call with MALLOC_CAP_INTERNAL | MALLOC_CAP_SPIRAM ORed together -
+// that flag combination means "capable of both simultaneously" (i.e. neither
+// region alone, since they're disjoint), not "either region". Always
+// compiled (not gated on CONFIG_UI_DIAGNOSTICS) since the dev console's
+// on-demand "memlog" command (cmd_memlog(), gated only on
+// CONFIG_DEV_SCREENSHOT_CONSOLE, near cmd_nav further down) needs it
+// independently of whether automatic periodic logging is enabled.
+typedef struct
+{
+    lv_mem_monitor_t lvgl;
+    size_t internal_free;
+    size_t internal_largest;
+    size_t internal_min_free;
+    size_t psram_free;
+    size_t psram_largest;
+    size_t psram_min_free;
+    int settings_view;
+    unsigned wifi_rows;
+    // Should never exceed 1 - the lazy-lifecycle invariant this whole effort
+    // is built on (see docs/decisions/0012-lazy-settings-screen-lifecycle.md).
+    // A count of 2 means some code path built a sub-screen without going
+    // through destroy_settings_view() first, or a stale reference (like the
+    // async-rebuild race fixed just before this PR) survived a teardown.
+    int resident_subscreens;
+} ui_mem_snapshot_t;
+
+static void ui_mem_collect(ui_mem_snapshot_t *out)
+{
+    lv_mem_monitor(&out->lvgl);
+    out->internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    out->internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    out->internal_min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    out->psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    out->psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    out->psram_min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    out->settings_view = (int)s_settings_view;
+    out->wifi_rows = s_wifi_rendered_count;
+    out->resident_subscreens = (s_locale_screen != NULL) + (s_time_format_screen != NULL) +
+                                (s_date_format_screen != NULL) + (s_time_zone_screen != NULL) +
+                                (s_time_zone_city_screen != NULL) + (s_region_screen != NULL) +
+                                (s_display_screen != NULL) + (s_wifi_screen != NULL) +
+                                (s_wifi_password_screen != NULL) + (s_watchlist_manage_screen != NULL) +
+                                (s_watchlist_add_screen != NULL) + (s_updates_screen != NULL) +
+                                (s_about_screen != NULL);
+}
+
+#if CONFIG_UI_DIAGNOSTICS
+// Automatic instrumentation call sites (update_timer_cb, show_settings_view,
+// Wi-Fi/Watchlist rebuilds) are gated on this option and log at ESP_LOGI, not
+// ESP_LOGD: this project's default CONFIG_LOG_MAXIMUM_LEVEL is INFO, which
+// compiles ESP_LOGD out entirely (not just filters it at runtime), so
+// CONFIG_UI_DIAGNOSTICS=y would otherwise silently produce nothing without
+// also raising the global log ceiling to DEBUG - which in turn collides with
+// an unrelated -Werror=use-after-free in the vendored esp_lcd_st7701_rgb.c
+// once DEBUG-level ESP_LOGD calls elsewhere in the tree compile in. INFO
+// keeps this option self-contained. See cmd_memlog() (further down, near
+// cmd_nav) for the always-available on-demand equivalent (plain printf,
+// unaffected by any of this).
+static void ui_log_lv_mem(const char *where)
+{
+    ui_mem_snapshot_t s;
+    ui_mem_collect(&s);
+    ESP_LOGI(TAG,
+             "uimem[%s] lvgl: used=%u%% free=%u biggest=%u frag=%u%% | "
+             "internal: free=%u largest=%u min=%u | psram: free=%u largest=%u min=%u | "
+             "view=%d wifi_rows=%u subscreens=%d",
+             where, (unsigned)s.lvgl.used_pct, (unsigned)s.lvgl.free_size, (unsigned)s.lvgl.free_biggest_size,
+             (unsigned)s.lvgl.frag_pct, (unsigned)s.internal_free, (unsigned)s.internal_largest,
+             (unsigned)s.internal_min_free, (unsigned)s.psram_free, (unsigned)s.psram_largest,
+             (unsigned)s.psram_min_free, s.settings_view, s.wifi_rows, s.resident_subscreens);
+}
+#endif // CONFIG_UI_DIAGNOSTICS
 
 // --- First-run-after-update disclaimer screen ---
 //
@@ -1045,6 +1126,10 @@ static void show_settings_view(settings_view_t view)
     }
     lv_obj_add_flag(s_settings_list, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(target, LV_OBJ_FLAG_HIDDEN);
+
+#if CONFIG_UI_DIAGNOSTICS
+    ui_log_lv_mem("show_settings_view");
+#endif
 }
 
 static void set_active_screen(display_ui_screen_t screen)
@@ -1326,6 +1411,15 @@ static void update_timer_cb(lv_timer_t *timer)
     {
         wifi_password_poll();
     }
+
+#if CONFIG_UI_DIAGNOSTICS
+    static uint8_t s_diag_tick;
+    if (++s_diag_tick >= 30) // ~30s at this timer's 1s period
+    {
+        s_diag_tick = 0;
+        ui_log_lv_mem("periodic");
+    }
+#endif
 }
 
 // Per-side hit-test padding (px). lv_obj_set_ext_click_area() alone can
@@ -2851,6 +2945,9 @@ static void update_wifi_screen(void)
         lv_obj_set_style_pad_top(empty, 16, 0);
         lv_label_set_text(empty, "Scanning...");
         build_wifi_add_network_row(s_wifi_list);
+#if CONFIG_UI_DIAGNOSTICS
+        ui_log_lv_mem("wifi_rebuild_empty");
+#endif
         return;
     }
     for (uint8_t i = 0; i < new_count; i++)
@@ -2858,6 +2955,9 @@ static void update_wifi_screen(void)
         build_wifi_ap_row(&new_rows[i], i);
     }
     build_wifi_add_network_row(s_wifi_list);
+#if CONFIG_UI_DIAGNOSTICS
+    ui_log_lv_mem("wifi_rebuild");
+#endif
 }
 
 static void wifi_row_click_cb(lv_event_t *e)
@@ -3448,6 +3548,9 @@ static void watchlist_manage_rebuild(void)
         build_watchlist_symbol_row(meta.symbol, i);
     }
     build_watchlist_add_row(s_watchlist_list, count < SETTINGS_MAX_WATCHLIST);
+#if CONFIG_UI_DIAGNOSTICS
+    ui_log_lv_mem("watchlist_rebuild");
+#endif
 }
 
 static void watchlist_manage_rebuild_async(void *unused)
@@ -6263,6 +6366,28 @@ static int cmd_nav(int argc, char **argv)
     return 0;
 }
 
+// On-demand equivalent of ui_log_lv_mem()'s automatic instrumentation (see
+// ui_mem_collect()'s comment) - printed directly rather than via ESP_LOGD so
+// it's visible over the console regardless of the runtime log level, in a
+// single greppable line matching this file's other dev commands' style
+// (NAV_OK, SCREENSHOT_BEGIN).
+static int cmd_memlog(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    ui_mem_snapshot_t s;
+    ui_mem_collect(&s);
+    printf("MEMLOG lvgl_used_pct=%u lvgl_free=%u lvgl_biggest=%u lvgl_frag_pct=%u "
+           "internal_free=%u internal_largest=%u internal_min_free=%u "
+           "psram_free=%u psram_largest=%u psram_min_free=%u "
+           "settings_view=%d wifi_rows=%u resident_subscreens=%d\n",
+           (unsigned)s.lvgl.used_pct, (unsigned)s.lvgl.free_size, (unsigned)s.lvgl.free_biggest_size,
+           (unsigned)s.lvgl.frag_pct, (unsigned)s.internal_free, (unsigned)s.internal_largest,
+           (unsigned)s.internal_min_free, (unsigned)s.psram_free, (unsigned)s.psram_largest,
+           (unsigned)s.psram_min_free, s.settings_view, s.wifi_rows, s.resident_subscreens);
+    return 0;
+}
+
 esp_err_t display_ui_register_dev_nav_console(void)
 {
     const esp_console_cmd_t nav_cmd = {
@@ -6273,7 +6398,18 @@ esp_err_t display_ui_register_dev_nav_console(void)
         .hint = NULL,
         .func = &cmd_nav,
     };
-    return esp_console_cmd_register(&nav_cmd);
+    esp_err_t err = esp_console_cmd_register(&nav_cmd);
+    if (err != ESP_OK)
+    {
+        return err;
+    }
+    const esp_console_cmd_t memlog_cmd = {
+        .command = "memlog",
+        .help = "Print LVGL pool / internal-RAM / PSRAM headroom and UI state (dev builds only)",
+        .hint = NULL,
+        .func = &cmd_memlog,
+    };
+    return esp_console_cmd_register(&memlog_cmd);
 }
 
 #else // !CONFIG_DEV_SCREENSHOT_CONSOLE
