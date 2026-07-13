@@ -19,8 +19,11 @@ Date: 2026-07-13
 | Build configurations | clean release defaults; local dev config with screenshot console and UI diagnostics |
 
 The application-size values are from the last clean ESP-IDF 6.0.2 build on
-the baseline commit. CI must publish the equivalent result for the final audit
-commit before this gate closes.
+the baseline commit. The final audit commit was built clean from both the
+release defaults (`0x1c3f70` bytes; `0x23c090` bytes/56% free per OTA slot)
+and the local dev config (`0x1cc7a0` bytes; `0x233860` bytes/55% free), plus
+all 8 host-test suites (330+ assertions) and the blocking `format-check`/
+`cppcheck` CI gates — see PR [#82](https://github.com/OleksandrDiachenko/crypto-market-data-ticker/pull/82).
 
 ## Findings
 

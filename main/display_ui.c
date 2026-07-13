@@ -5129,7 +5129,9 @@ typedef struct
     tz_posix_id_t posix;
 } tz_entry_t;
 
+// clang-format off
 #define TZROW(zone, city, posix) {zone, city, posix}
+// clang-format on
 
 // Not const: sorted in place, once, the first time build_time_zone_screen()
 // runs (see its qsort() call) so region/city lists read alphabetically
