@@ -58,7 +58,10 @@ are not disguised as host unit tests with incomplete platform mocks.
 ## Manual release regression
 
 Before a release, record boot/first-entry timings, every screenshot target,
-sparkline fill, brightness/night mode, empty/max watchlists, maximum Wi-Fi
-list, offline/reconnect, region resync, OTA, navigation stress and a 60-minute
+brightness/night mode, empty/max watchlists, maximum Wi-Fi list,
+offline/reconnect, region resync, OTA, navigation stress and a 60-minute
 memory/stack soak. Use the Phase 16.5 report template in
-`docs/validation/pre-phase-17-release-readiness.md`.
+`docs/validation/pre-phase-17-release-readiness.md`. There is no sparkline
+area-fill to check - it was removed after hardware validation found it
+exhausted the LVGL pool (see `docs/debugging/sparkline-fill-oom-freeze.md`);
+the sparkline itself is a plain line chart.

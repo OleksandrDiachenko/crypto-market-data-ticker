@@ -502,74 +502,6 @@ static void destroy_rows(void)
     s_row_count = 0;
 }
 
-// Fills the area under a row's sparkline with a fade from the series color
-// (at the line) to fully transparent (at the chart's bottom edge).
-// lv_chart has no built-in area-fill for LV_CHART_TYPE_LINE, so this hooks
-// LV_EVENT_DRAW_TASK_ADDED and replicates the technique from the vendored
-// managed_components/lvgl__lvgl/demos/widgets/lv_demo_widgets_analytics.c
-// (its own dashboard area chart), simplified here for a single series per
-// chart - no need for that demo's multi-series id lookup.
-static void chart_draw_event_cb(lv_event_t *e)
-{
-    lv_obj_t *chart = lv_event_get_target(e);
-    display_ui_row_t *row = (display_ui_row_t *)lv_event_get_user_data(e);
-    lv_draw_task_t *draw_task = lv_event_get_param(e);
-    lv_draw_dsc_base_t *base_dsc = lv_draw_task_get_draw_dsc(draw_task);
-    lv_draw_line_dsc_t *draw_line_dsc = lv_draw_task_get_line_dsc(draw_task);
-    if (base_dsc->part != LV_PART_ITEMS || draw_line_dsc == NULL)
-    {
-        return;
-    }
-
-    lv_area_t obj_coords;
-    lv_obj_get_coords(chart, &obj_coords);
-    lv_color_t color = lv_chart_get_series_color(chart, row->series);
-    int32_t full_h = lv_obj_get_height(chart);
-
-    for (int32_t i = 0; i < draw_line_dsc->point_cnt - 1; i++)
-    {
-        lv_point_precise_t p1 = draw_line_dsc->points[i];
-        lv_point_precise_t p2 = draw_line_dsc->points[i + 1];
-
-        lv_draw_triangle_dsc_t tri_dsc;
-        lv_draw_triangle_dsc_init(&tri_dsc);
-        tri_dsc.p[0].x = (int32_t)p1.x;
-        tri_dsc.p[0].y = (int32_t)p1.y;
-        tri_dsc.p[1].x = (int32_t)p2.x;
-        tri_dsc.p[1].y = (int32_t)p2.y;
-        tri_dsc.p[2].x = (int32_t)(p1.y < p2.y ? p1.x : p2.x);
-        tri_dsc.p[2].y = (int32_t)LV_MAX(p1.y, p2.y);
-        tri_dsc.grad.dir = LV_GRAD_DIR_VER;
-
-        int32_t fract_upper = (int32_t)(LV_MIN(p1.y, p2.y) - obj_coords.y1) * 255 / full_h;
-        int32_t fract_lower = (int32_t)(LV_MAX(p1.y, p2.y) - obj_coords.y1) * 255 / full_h;
-        tri_dsc.grad.stops[0].color = color;
-        tri_dsc.grad.stops[0].opa = (lv_opa_t)(255 - fract_upper);
-        tri_dsc.grad.stops[0].frac = 0;
-        tri_dsc.grad.stops[1].color = color;
-        tri_dsc.grad.stops[1].opa = (lv_opa_t)(255 - fract_lower);
-        tri_dsc.grad.stops[1].frac = 255;
-        lv_draw_triangle(base_dsc->layer, &tri_dsc);
-
-        lv_draw_rect_dsc_t rect_dsc;
-        lv_draw_rect_dsc_init(&rect_dsc);
-        rect_dsc.bg_grad.dir = LV_GRAD_DIR_VER;
-        rect_dsc.bg_grad.stops[0].color = color;
-        rect_dsc.bg_grad.stops[0].frac = 0;
-        rect_dsc.bg_grad.stops[0].opa = (lv_opa_t)(255 - fract_lower);
-        rect_dsc.bg_grad.stops[1].color = color;
-        rect_dsc.bg_grad.stops[1].frac = 255;
-        rect_dsc.bg_grad.stops[1].opa = 0;
-
-        lv_area_t rect_area;
-        rect_area.x1 = (int32_t)p1.x;
-        rect_area.x2 = (int32_t)p2.x;
-        rect_area.y1 = (int32_t)LV_MAX(p1.y, p2.y);
-        rect_area.y2 = obj_coords.y2;
-        lv_draw_rect(base_dsc->layer, &rect_dsc, &rect_area);
-    }
-}
-
 static void build_row(uint8_t index)
 {
     display_ui_row_t *row = &s_rows[index];
@@ -625,8 +557,6 @@ static void build_row(uint8_t index)
     // range in update_row() via display_format_normalize_value(), so the
     // axis itself never needs to change per tick.
     lv_chart_set_axis_range(row->chart, LV_CHART_AXIS_PRIMARY_Y, 0, CHART_SCALE_MAX);
-    lv_obj_add_flag(row->chart, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
-    lv_obj_add_event_cb(row->chart, chart_draw_event_cb, LV_EVENT_DRAW_TASK_ADDED, row);
 
     // Right: price + change, right-aligned.
     lv_obj_t *right = lv_obj_create(row->row);
