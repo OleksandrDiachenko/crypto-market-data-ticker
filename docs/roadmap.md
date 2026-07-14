@@ -581,21 +581,25 @@ Status: In progress
 The audit baseline, severity matrix and evidence are tracked in
 `docs/reviews/pre-phase-17-code-audit.md` (GitHub issue #81). The code slice
 removes the temporary watchlist reseed, preserves a valid empty-watchlist
-runtime, enables sparkline draw-task events, extracts host-testable UI logic,
-strengthens CI gates and reconciles maintainer documentation. Physical
-release-regression and soak evidence remains an explicit gate rather than an
-unchecked claim.
+runtime, extracts host-testable UI logic, strengthens CI gates and
+reconciles maintainer documentation. The physical release-regression pass
+(see `docs/validation/pre-phase-17-release-readiness.md`) caught and removed
+a sparkline area-fill feature that exhausted the LVGL pool once actually
+exercised - see `docs/debugging/sparkline-fill-oom-freeze.md` - and verified
+a real OTA install/rollback end-to-end. The 60-minute soak was explicitly
+skipped this pass and remains open before Phase 17 starts.
 
 Acceptance criteria:
 - [x] Baseline, repository hygiene and first-party static review recorded
 - [x] Legacy boot-time watchlist reseed removed; empty persisted state host-tested
-- [x] Sparkline chart sends draw-task events
+- [x] Sparkline chart draw-task fill enabled, then removed after hardware testing found it exhausted the LVGL pool (see `docs/debugging/sparkline-fill-oom-freeze.md`); sparkline remains a plain line chart
 - [x] Initial pure logic extracted from `display_ui.c` and host-tested
 - [x] Repo-wide formatting and first-party cppcheck made blocking CI gates
 - [x] Current setup, architecture, testing and screenshot documentation reconciled
 - [x] Clean release and development builds pass on the audit commit
-- [ ] Empty-watchlist reboot/add-back and sparkline behavior verified on hardware
-- [ ] Full regression, navigation stress and 60-minute soak report passes
+- [x] Empty-watchlist reboot/add-back verified on hardware
+- [x] Full regression and navigation stress (450 cycles, 0 errors) pass; also caught and fixed a real OTA-artifact naming gap while validating install/rollback end-to-end
+- [ ] 60-minute soak report passes (explicitly skipped this pass by product decision; open gate before Phase 17 starts)
 
 ### Phase 17: Portfolio polish
 Status: Planned
